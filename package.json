@@ -9,7 +9,12 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "check": "node --check index.js && node --check database.js && node --check content.js",
+    "check": "node --check index.js && node --check src/server.js && node --check src/app.js && node --check src/modules/user/index.js && node --check src/modules/user/model.js && node --check src/modules/user/controller.js && node --check src/modules/user/service.js && node --check src/modules/lesson/index.js && node --check src/modules/lesson/model.js && node --check src/modules/lesson/controller.js && node --check src/modules/lesson/service.js && node --check scripts/setup-supabase.js",
+    "supabase:setup": "node scripts/setup-supabase.js",
     "test": "node --test"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "pg": "^8.22.0"
   }
 }

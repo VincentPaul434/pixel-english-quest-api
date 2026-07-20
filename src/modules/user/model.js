@@ -2,7 +2,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { lessons as seedLessons } from './content.js';
+import { lessons as seedLessons } from '../lesson/index.js';
 
 export const DEMO_ACCOUNTS = {
   teacher: { email: 'teacher@pixel.academy', password: 'Teach123!' },

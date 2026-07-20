@@ -5,7 +5,8 @@ The database-backed API for the English Pixel Academy learning system. It uses N
 ## Requirements
 
 - Node.js 24 or newer
-- No external database server or npm runtime dependencies
+- npm dependencies installed with `npm install`
+- Optional Supabase Postgres project for cloud database setup
 
 ## Start locally
 
@@ -37,9 +38,21 @@ npm start
 
 - `PORT`: HTTP port, default `3001`
 - `ACADEMY_DB_FILE`: SQLite file path, default `academy.db`
+- `SUPABASE_DB_URL` or `DATABASE_URL`: Supabase Postgres connection string for the setup script
+- `PGSSLMODE`: set to `disable` only for a non-SSL local Postgres database; Supabase should use SSL
 - `ALLOWED_ORIGINS`: comma-separated frontend origins
 - `ALLOWED_ORIGIN_HOSTS`: comma-separated frontend hostnames; useful when a host injects its generated domain
 - `TEACHER_INVITE_CODE`: optional code required when registering new teacher accounts
+
+## Supabase database setup
+
+Create a Supabase project, then copy the Postgres connection string from **Project Settings > Database > Connection string**. Use the pooled or direct URI, replacing `[YOUR-PASSWORD]` with the database password.
+
+```bash
+SUPABASE_DB_URL="postgresql://postgres:[YOUR-PASSWORD]@db.your-project.supabase.co:5432/postgres" npm run supabase:setup
+```
+
+The setup command runs `supabase/schema.sql` and seeds the same demo curriculum and demo accounts used by the local SQLite database. If the database already has users, it creates any missing tables but leaves existing data unchanged.
 
 ## Implemented platform capabilities
 

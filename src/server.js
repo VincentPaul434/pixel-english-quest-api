@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer, port } from './src/server.js';
+import { createServer, port } from './app.js';
 
-export { createServer };
+export { createServer, port };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   createServer().listen(port, () => {
