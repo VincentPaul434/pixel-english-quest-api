@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: pixel-english-quest-api
+    runtime: node
+    plan: starter
+    region: singapore
+    repo: https://github.com/VincentPaul434/pixel-english-quest-api.git
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: academy-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ACADEMY_DB_FILE
+        value: /var/data/academy.db
+      - key: ALLOWED_ORIGIN_HOSTS
+        fromService:
+          type: web
+          name: pixel-english-quest
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+
+  - type: web
+    name: pixel-english-quest
+    runtime: static
+    plan: free
+    repo: https://github.com/VincentPaul434/pixel-english-quest.git
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_HOST
+        fromService:
+          type: web
+          name: pixel-english-quest-api
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
