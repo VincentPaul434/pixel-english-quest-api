@@ -1,0 +1,11 @@
+{
+  "name": "@afk-academy/backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch index.js",
+    "start": "node index.js",
+    "check": "node --check index.js && node --check content.js"
+  }
+}
