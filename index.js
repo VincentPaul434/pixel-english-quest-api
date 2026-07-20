@@ -1,14 +1,11 @@
 import http from 'node:http';
-import { readFile, writeFile, stat } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lessons, quickQuestions } from './content.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, '..');
 const dataFile = process.env.AFK_DATA_FILE || path.join(__dirname, 'data.json');
-const distDir = path.join(rootDir, 'frontend', 'dist');
 const port = Number(process.env.PORT) || 3001;
 
 const initialData = {
@@ -98,6 +95,10 @@ async function api(req, res, pathname) {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const data = await loadData();
 
+  if (req.method === 'GET' && pathname === '/api/health') {
+    return json(res, 200, { status: 'ok', service: 'pixel-english-quest-api' });
+  }
+
   if (req.method === 'GET' && pathname === '/api/dashboard') {
     return json(res, 200, dashboard(data));
   }
@@ -183,36 +184,18 @@ async function api(req, res, pathname) {
   return json(res, 404, { error: 'Route not found' });
 }
 
-const mime = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.json': 'application/json; charset=utf-8'
-};
-
-async function serveStatic(res, pathname) {
-  if (!existsSync(distDir)) {
-    return json(res, 404, { error: 'Frontend is not built. Run npm run dev or npm run build.' });
-  }
-  let filePath = path.join(distDir, pathname === '/' ? 'index.html' : pathname);
-  if (!filePath.startsWith(distDir)) return json(res, 403, { error: 'Forbidden' });
-  try {
-    const info = await stat(filePath);
-    if (info.isDirectory()) filePath = path.join(filePath, 'index.html');
-  } catch {
-    filePath = path.join(distDir, 'index.html');
-  }
-  res.writeHead(200, { 'Content-Type': mime[path.extname(filePath)] || 'application/octet-stream' });
-  createReadStream(filePath).pipe(res);
-}
-
 const server = http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url || '/', `http://${req.headers.host}`).pathname;
     if (pathname.startsWith('/api/')) return await api(req, res, pathname);
-    return await serveStatic(res, pathname);
+    if (pathname === '/') {
+      return json(res, 200, {
+        name: 'Pixel English Quest API',
+        status: 'ok',
+        health: '/api/health'
+      });
+    }
+    return json(res, 404, { error: 'Route not found' });
   } catch (error) {
     console.error(error);
     return json(res, 500, { error: error.message || 'Internal server error' });
@@ -220,5 +203,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`AFK Academy API listening on http://localhost:${port}`);
+  console.log(`Pixel English Quest API listening on http://localhost:${port}`);
 });
