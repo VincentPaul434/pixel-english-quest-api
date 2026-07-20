@@ -2,6 +2,8 @@
 
 The database-backed API for the English Pixel Academy learning system. It uses Node.js built-ins only: `node:http`, `node:crypto`, and Node's SQLite module.
 
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the feature-based backend organization standard and current source layout.
+
 ## Requirements
 
 - Node.js 24 or newer

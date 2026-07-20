@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { lessons } from '../src/modules/lesson/index.js';
-import { DEMO_ACCOUNTS, hashPassword } from '../src/modules/user/index.js';
+import { lessons } from '../src/lesson/lesson.seed.js';
+import { DEMO_ACCOUNTS, hashPassword } from '../src/config/database.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const databaseUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;

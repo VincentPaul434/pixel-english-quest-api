@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { DEMO_ACCOUNTS } from '../src/modules/user/index.js';
+import { DEMO_ACCOUNTS } from '../src/config/database.js';
 import { createServer } from '../index.js';
 
 async function academy(t) {
