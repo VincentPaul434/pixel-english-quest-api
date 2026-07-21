@@ -2,9 +2,10 @@ import { requireUser } from '../shared/middleware/auth.middleware.js';
 import { bodyOf, created, ok, csv } from '../shared/http.js';
 import {
   addClassroomStudent, addQuestionBankItem, adminDashboard, createCalendarEvent, createClassroom,
-  createDiscussion, duplicateLesson, gradeSubmission, lessonVersions, listCourseDiscussions,
+  createClassroomInvitation, createDiscussion, duplicateLesson, gradeSubmission, joinClassroom,
+  leaveClassroom, lessonVersions, listCourseDiscussions, previewClassroomInvitation, resolveJoinRequest,
   markAllNotificationsRead, markAttendance, markNotificationRead, platformOverview, removeClassroomStudent,
-  reorderLessons, restoreLessonVersion, selfEnroll, setAdminStatus, submitAssignment, teacherReport,
+  reorderLessons, restoreLessonVersion, revokeClassroomInvitation, selfEnroll, setAdminStatus, submitAssignment, teacherReport,
   verifyCertificate, signUpload
 } from './platform.service.js';
 
@@ -18,6 +19,12 @@ export async function assignmentSubmit(context) { created(context, await submitA
 export async function classroomCreate(context) { created(context, await createClassroom(context.db, await requireUser(context.req, context.db, 'teacher'), await bodyOf(context.req))); }
 export async function classroomStudentAdd(context) { ok(context, await addClassroomStudent(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.classroomId, context.params.studentId)); }
 export async function classroomStudentRemove(context) { ok(context, await removeClassroomStudent(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.classroomId, context.params.studentId)); }
+export async function classroomInvitationCreate(context) { created(context, await createClassroomInvitation(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.classroomId, await bodyOf(context.req))); }
+export async function classroomInvitationRevoke(context) { ok(context, await revokeClassroomInvitation(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.invitationId)); }
+export async function classroomInvitationPreview(context) { ok(context, await previewClassroomInvitation(context.db, await requireUser(context.req, context.db, 'student'), context.params.code)); }
+export async function classroomJoin(context) { ok(context, await joinClassroom(context.db, await requireUser(context.req, context.db, 'student'), context.params.code)); }
+export async function classroomJoinResolve(context) { ok(context, await resolveJoinRequest(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.requestId, await bodyOf(context.req))); }
+export async function classroomLeave(context) { ok(context, await leaveClassroom(context.db, await requireUser(context.req, context.db, 'student'), context.params.classroomId)); }
 export async function submissionGrade(context) { ok(context, await gradeSubmission(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.id, await bodyOf(context.req))); }
 export async function calendarCreate(context) { created(context, await createCalendarEvent(context.db, await requireUser(context.req, context.db, 'teacher'), await bodyOf(context.req))); }
 export async function attendanceMark(context) { ok(context, await markAttendance(context.db, await requireUser(context.req, context.db, 'teacher'), context.params.eventId, await bodyOf(context.req))); }

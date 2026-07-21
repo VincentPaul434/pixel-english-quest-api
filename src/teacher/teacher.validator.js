@@ -39,7 +39,6 @@ export function validateModuleCreate(body) {
 export function validateAssignment(body, eligible, lesson) {
   const requestedIds = Array.isArray(body.studentIds) ? body.studentIds.map(String) : [];
   const studentIds = requestedIds.length ? requestedIds.filter((id) => eligible.includes(id)) : eligible;
-  if (!studentIds.length) throw new HttpError(400, 'Select at least one enrolled student.');
   return {
     studentIds,
     title: cleanText(body.title, 160) || lesson.title,
