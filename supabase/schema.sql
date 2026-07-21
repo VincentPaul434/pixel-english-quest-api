@@ -178,3 +178,199 @@ create index if not exists idx_lessons_course on lessons(course_id, position);
 create index if not exists idx_attempts_user on lesson_attempts(user_id, created_at desc);
 create index if not exists idx_activity_user on activities(user_id, created_at desc);
 create index if not exists idx_assignment_student on assignment_students(student_id, status);
+
+alter table users add column if not exists is_admin integer not null default 0;
+alter table users add column if not exists email_verified_at text;
+alter table users add column if not exists locale text not null default 'en';
+alter table users add column if not exists notification_preferences_json text not null default '{}';
+alter table users add column if not exists mfa_secret text;
+alter table users add column if not exists mfa_enabled integer not null default 0;
+alter table courses add column if not exists catalog_visibility text not null default 'private';
+alter table courses add column if not exists enrollment_mode text not null default 'invite';
+alter table courses add column if not exists certificate_enabled integer not null default 1;
+alter table courses add column if not exists prerequisite_course_id text;
+alter table courses add column if not exists published_at text;
+alter table lessons add column if not exists attempt_limit integer not null default 0;
+alter table lessons add column if not exists shuffle_questions integer not null default 0;
+alter table lessons add column if not exists available_from text;
+alter table lessons add column if not exists available_until text;
+alter table lessons add column if not exists publish_at text;
+alter table lessons add column if not exists version integer not null default 1;
+alter table questions add column if not exists question_kind text;
+alter table questions add column if not exists points integer not null default 1;
+alter table questions add column if not exists settings_json text not null default '{}';
+alter table assignments add column if not exists instructions text not null default '';
+alter table assignments add column if not exists submission_type text not null default 'quiz';
+alter table assignments add column if not exists max_score integer not null default 100;
+alter table assignments add column if not exists allow_resubmission integer not null default 1;
+
+create table if not exists classrooms (
+  id text primary key,
+  teacher_id text not null references users(id),
+  course_id text not null references courses(id) on delete cascade,
+  name text not null,
+  code text not null unique,
+  starts_at text,
+  ends_at text,
+  created_at text not null
+);
+
+create table if not exists classroom_students (
+  classroom_id text not null references classrooms(id) on delete cascade,
+  student_id text not null references users(id) on delete cascade,
+  enrolled_at text not null,
+  primary key (classroom_id, student_id)
+);
+
+create table if not exists submissions (
+  id text primary key,
+  assignment_id text not null references assignments(id) on delete cascade,
+  student_id text not null references users(id) on delete cascade,
+  text_content text not null default '',
+  attachment_url text,
+  status text not null default 'submitted',
+  score integer,
+  feedback text not null default '',
+  rubric_json text not null default '[]',
+  submitted_at text not null,
+  graded_at text,
+  graded_by text references users(id),
+  attempt_number integer not null default 1
+);
+
+create table if not exists discussions (
+  id text primary key,
+  course_id text not null references courses(id) on delete cascade,
+  author_id text not null references users(id) on delete cascade,
+  parent_id text references discussions(id) on delete cascade,
+  body text not null,
+  created_at text not null,
+  edited_at text
+);
+
+create table if not exists notifications (
+  id text primary key,
+  user_id text not null references users(id) on delete cascade,
+  type text not null,
+  title text not null,
+  body text not null,
+  link text,
+  read_at text,
+  created_at text not null
+);
+
+create table if not exists certificates (
+  id text primary key,
+  user_id text not null references users(id) on delete cascade,
+  course_id text not null references courses(id) on delete cascade,
+  verification_code text not null unique,
+  issued_at text not null,
+  unique(user_id, course_id)
+);
+
+create table if not exists audit_logs (
+  id text primary key,
+  actor_id text references users(id) on delete set null,
+  action text not null,
+  entity_type text not null,
+  entity_id text,
+  metadata_json text not null default '{}',
+  created_at text not null
+);
+
+create table if not exists lesson_versions (
+  id text primary key,
+  lesson_id text not null references lessons(id) on delete cascade,
+  teacher_id text not null references users(id),
+  version integer not null,
+  snapshot_json text not null,
+  created_at text not null
+);
+
+create table if not exists question_bank (
+  id text primary key,
+  teacher_id text not null references users(id) on delete cascade,
+  prompt text not null,
+  type text not null,
+  choices_json text not null default '[]',
+  answer_json text not null,
+  explanation text not null default '',
+  tags_json text not null default '[]',
+  created_at text not null,
+  updated_at text not null
+);
+
+create table if not exists calendar_events (
+  id text primary key,
+  course_id text references courses(id) on delete cascade,
+  classroom_id text references classrooms(id) on delete cascade,
+  creator_id text not null references users(id),
+  title text not null,
+  description text not null default '',
+  starts_at text not null,
+  ends_at text,
+  event_type text not null default 'class',
+  created_at text not null
+);
+
+create table if not exists attendance (
+  event_id text not null references calendar_events(id) on delete cascade,
+  student_id text not null references users(id) on delete cascade,
+  status text not null default 'present',
+  note text not null default '',
+  marked_at text not null,
+  primary key (event_id, student_id)
+);
+
+create table if not exists password_reset_tokens (
+  token_hash text primary key,
+  user_id text not null references users(id) on delete cascade,
+  expires_at text not null,
+  used_at text,
+  created_at text not null
+);
+
+create table if not exists email_verification_tokens (
+  token_hash text primary key,
+  user_id text not null references users(id) on delete cascade,
+  expires_at text not null,
+  used_at text,
+  created_at text not null
+);
+
+create index if not exists idx_notifications_user on notifications(user_id, read_at, created_at desc);
+create index if not exists idx_submissions_assignment on submissions(assignment_id, student_id, submitted_at desc);
+create index if not exists idx_discussions_course on discussions(course_id, created_at desc);
+create index if not exists idx_audit_created on audit_logs(created_at desc);
+
+-- The application API is the only data-access surface. With no public policies,
+-- Supabase anon/authenticated clients cannot bypass the API's role checks.
+alter table users enable row level security;
+alter table sessions enable row level security;
+alter table courses enable row level security;
+alter table modules enable row level security;
+alter table lessons enable row level security;
+alter table questions enable row level security;
+alter table enrollments enable row level security;
+alter table lesson_attempts enable row level security;
+alter table progress enable row level security;
+alter table assignments enable row level security;
+alter table assignment_students enable row level security;
+alter table announcements enable row level security;
+alter table quick_attempts enable row level security;
+alter table vocabulary enable row level security;
+alter table speaking_attempts enable row level security;
+alter table activities enable row level security;
+alter table classrooms enable row level security;
+alter table classroom_students enable row level security;
+alter table submissions enable row level security;
+alter table discussions enable row level security;
+alter table notifications enable row level security;
+alter table certificates enable row level security;
+alter table audit_logs enable row level security;
+alter table lesson_versions enable row level security;
+alter table question_bank enable row level security;
+alter table calendar_events enable row level security;
+alter table attendance enable row level security;
+alter table password_reset_tokens enable row level security;
+alter table email_verification_tokens enable row level security;

@@ -2,45 +2,32 @@ services:
   - type: web
     name: pixel-english-quest-api
     runtime: node
-    plan: starter
+    plan: free
     region: singapore
     repo: https://github.com/VincentPaul434/pixel-english-quest-api.git
-    branch: main
+    branch: pixel-features
     autoDeployTrigger: commit
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/health
-    disk:
-      name: academy-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
-      - key: ACADEMY_DB_FILE
-        value: /var/data/academy.db
-      - key: ALLOWED_ORIGIN_HOSTS
-        fromService:
-          type: web
-          name: pixel-english-quest
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
-
-  - type: web
-    name: pixel-english-quest
-    runtime: static
-    plan: free
-    repo: https://github.com/VincentPaul434/pixel-english-quest.git
-    branch: main
-    autoDeployTrigger: commit
-    buildCommand: npm ci && npm run build
-    staticPublishPath: ./dist
-    envVars:
-      - key: VITE_API_HOST
-        fromService:
-          type: web
-          name: pixel-english-quest-api
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSLMODE
+        value: require
+      - key: DB_POOL_SIZE
+        value: 5
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: TEACHER_INVITE_CODE
+        sync: false
+      - key: EMAIL_WEBHOOK_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: learning-assets

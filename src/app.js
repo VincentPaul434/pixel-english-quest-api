@@ -10,10 +10,12 @@ import { logRequest } from './shared/utils/logger.js';
 
 export { port };
 
-export function createServer({ databaseFile = defaultDatabaseFile } = {}) {
-  const db = createDatabase({ filename: databaseFile });
+function application(options = {}) {
+  const databaseFile = options.databaseFile ?? defaultDatabaseFile;
+  const databaseUrl = options.databaseUrl ?? (options.databaseFile ? '' : process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || '');
+  const db = createDatabase({ filename: databaseFile, databaseUrl });
   const limits = new Map();
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const requestId = randomUUID();
     const started = Date.now();
     try {
@@ -38,7 +40,17 @@ export function createServer({ databaseFile = defaultDatabaseFile } = {}) {
     } finally {
       logRequest({ requestId, method: req.method, path: req.url, status: res.statusCode, durationMs: Date.now() - started });
     }
-  });
-  server.on('close', () => db.close());
+  };
+  return { db, handler };
+}
+
+export function createRequestHandler(options = {}) {
+  return application(options).handler;
+}
+
+export function createServer(options = {}) {
+  const { db, handler } = application(options);
+  const server = http.createServer(handler);
+  server.on('close', () => { void Promise.resolve(db.close()); });
   return server;
 }

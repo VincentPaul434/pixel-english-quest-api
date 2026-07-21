@@ -1,6 +1,6 @@
 # Pixel English Quest API
 
-The database-backed API for the English Pixel Academy learning system. It uses Node.js built-ins only: `node:http`, `node:crypto`, and Node's SQLite module.
+The database-backed API for the English Pixel Academy learning system. It runs on local SQLite or a Supabase Postgres database through the same service layer.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the feature-based backend organization standard and current source layout.
 
@@ -40,11 +40,13 @@ npm start
 
 - `PORT`: HTTP port, default `3001`
 - `ACADEMY_DB_FILE`: SQLite file path, default `academy.db`
-- `SUPABASE_DB_URL` or `DATABASE_URL`: Supabase Postgres connection string for the setup script
+- `SUPABASE_DB_URL` or `DATABASE_URL`: Supabase Postgres connection string used by setup and the live API runtime
 - `PGSSLMODE`: set to `disable` only for a non-SSL local Postgres database; Supabase should use SSL
 - `ALLOWED_ORIGINS`: comma-separated frontend origins
 - `ALLOWED_ORIGIN_HOSTS`: comma-separated frontend hostnames; useful when a host injects its generated domain
 - `TEACHER_INVITE_CODE`: optional code required when registering new teacher accounts
+- `EMAIL_WEBHOOK_URL`: optional email-provider webhook for verification and password-reset messages
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`: optional signed file-upload configuration
 
 ## Supabase database setup
 
@@ -56,19 +58,24 @@ SUPABASE_DB_URL="postgresql://postgres:[YOUR-PASSWORD]@db.your-project.supabase.
 
 The setup command runs `supabase/schema.sql` and seeds the same demo curriculum and demo accounts used by the local SQLite database. If the database already has users, it creates any missing tables but leaves existing data unchanged.
 
+Run `npm run supabase:verify` for a read-only check of student, teacher, platform, and admin queries against the configured Supabase database.
+
 ## Implemented platform capabilities
 
-- Password-hashed student and teacher accounts
+- Password-hashed student and teacher accounts, email verification, password recovery, and optional authenticator MFA
 - Expiring bearer sessions and role authorization
-- SQLite persistence with foreign keys, WAL mode, migrations, and transactional writes
-- Course, module, lesson, and question authoring
+- Dual SQLite/Supabase Postgres persistence, migrations, transactions, pooling, and protected Supabase tables
+- Course catalog, prerequisites, self-enrollment, classrooms, rosters, attendance, and calendar events
+- Course, module, lesson, question-bank, version-history, duplication, and ordering tools
 - Draft, published, and archived content states
-- Multiple-choice, true/false, and fill-in-the-blank assessment
-- Enrollments, assignments, due dates, and completion tracking
+- Multiple-choice, true/false, fill-in, essay, matching, and ordering assessment with points, attempt limits, and availability windows
+- Assignments, text/file submissions, resubmission rules, rubric records, grading, and feedback
 - Every lesson attempt, answer, score, duration, and best-score progress
 - Saved lesson checkpoints, draft answers, notes, and bookmarks
 - Skill mastery, streaks, achievements, XP, levels, and activity records
 - Teacher announcements, student analytics, and question-level performance
+- Course discussions, in-app notifications, CSV reports, completion certificates, verification codes, and admin audit logs
+- Supabase Storage signed uploads when cloud storage credentials are configured
 - Vocabulary study decks and speaking-attempt transcripts
 - Request-size limits, rate limiting, restricted CORS, security headers, and request IDs
 - Per-user progress reset instead of a global destructive reset
@@ -113,15 +120,8 @@ The setup command runs `supabase/schema.sql` and seeds the same demo curriculum 
 
 ## Production deployment notes
 
-The root `render.yaml` is a single Render Blueprint for both repositories. It creates:
+`render.yaml` defines the production backend as a Singapore Render web service on the `pixel-features` branch. It uses Supabase Postgres, requires no persistent disk, runs `npm start`, and checks `/api/health`. Configure `DATABASE_URL`, restricted CORS origins, and optional production email/storage values when applying the Blueprint.
 
-- a Singapore Node web service for this API
-- a 1 GB persistent disk mounted at `/var/data`
-- a free static site built from the frontend repository
-- cross-service environment variables for the API URL and restricted CORS
+The included Vercel function entrypoint remains available as an alternative deployment target. The frontend should receive the final Render URL through `VITE_API_URL` at build time.
 
-The API service uses Render's paid `starter` plan because persistent disks are not available on a free web service. Review the plan in Render before deploying the Blueprint.
-
-Back up the SQLite database and its WAL files together, or use SQLite's online backup mechanism. Run one application writer instance per database file. For horizontal scaling, replace the storage adapter with PostgreSQL while keeping the API contracts.
-
-Hosted email delivery, cloud object storage, and commercial speech-scoring services are intentionally not bundled. The local app uses hosted media URLs and browser speech recognition so every implemented workflow remains runnable without service credentials.
+The supplied Supabase schema enables RLS on every application table with no anon/authenticated client policies. The application API remains the only database access surface and uses its server-side Postgres connection for authorization-aware queries.

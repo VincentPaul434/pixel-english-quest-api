@@ -3,12 +3,14 @@ import { handleAuthRoutes } from '../auth/auth.routes.js';
 import { handleLessonRoutes } from '../lesson/lesson.routes.js';
 import { handleStudentRoutes } from '../student/student.routes.js';
 import { handleTeacherRoutes } from '../teacher/teacher.routes.js';
+import { handlePlatformRoutes } from '../platform/platform.routes.js';
 
 const routeGroups = [
   handleAuthRoutes,
   handleStudentRoutes,
   handleLessonRoutes,
-  handleTeacherRoutes
+  handleTeacherRoutes,
+  handlePlatformRoutes
 ];
 
 export async function handleApiRequest(req, res, pathname, db, requestId) {
@@ -18,7 +20,7 @@ export async function handleApiRequest(req, res, pathname, db, requestId) {
   }
 
   if (req.method === 'GET' && pathname === '/api/health') {
-    const database = db.prepare('SELECT 1 AS ok').get().ok === 1;
+    const database = (await db.prepare('SELECT 1 AS ok').get()).ok === 1;
     json(req, res, requestId, 200, { status: 'ok', service: 'pixel-english-quest-api', database });
     return;
   }
