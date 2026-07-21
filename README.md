@@ -120,6 +120,8 @@ Run `npm run supabase:verify` for a read-only check of student, teacher, platfor
 
 ## Production deployment notes
 
-`vercel.json` and `api/index.js` expose the Node API as a Vercel Function. Configure `SUPABASE_DB_URL`, restricted CORS origins, and production email/storage values in the Vercel project. The frontend has its own Vercel configuration and should receive `VITE_API_URL` at build time.
+`render.yaml` defines the production backend as a Singapore Render web service on the `pixel-features` branch. It uses Supabase Postgres, requires no persistent disk, runs `npm start`, and checks `/api/health`. Configure `DATABASE_URL`, restricted CORS origins, and optional production email/storage values when applying the Blueprint.
+
+The included Vercel function entrypoint remains available as an alternative deployment target. The frontend should receive the final Render URL through `VITE_API_URL` at build time.
 
 The supplied Supabase schema enables RLS on every application table with no anon/authenticated client policies. The application API remains the only database access surface and uses its server-side Postgres connection for authorization-aware queries.
