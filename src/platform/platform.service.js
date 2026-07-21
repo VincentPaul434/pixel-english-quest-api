@@ -57,7 +57,7 @@ async function commonOverview(db, user) {
 }
 
 async function studentOverview(db, user) {
-  const [catalog, classrooms, submissions, certificates] = await Promise.all([
+  const [catalog, classrooms, submissions, certificates, invitationStates] = await Promise.all([
     catalogCourses(db, user),
     db.prepare(`SELECT cl.id, cl.name, cl.code, cl.starts_at AS startsAt, cl.ends_at AS endsAt,
       c.id AS courseId, c.title AS courseTitle, u.name AS teacherName
@@ -73,14 +73,20 @@ async function studentOverview(db, user) {
     db.prepare(`SELECT cert.id, cert.verification_code AS verificationCode, cert.issued_at AS issuedAt,
       c.id AS courseId, c.title AS courseTitle
       FROM certificates cert JOIN courses c ON c.id = cert.course_id
-      WHERE cert.user_id = ? ORDER BY cert.issued_at DESC`).all(user.id)
+      WHERE cert.user_id = ? ORDER BY cert.issued_at DESC`).all(user.id),
+    db.prepare(`SELECT i.id, i.code, i.classroom_id AS classroomId, cl.name AS classroomName,
+      c.title AS courseTitle, u.name AS teacherName, i.expires_at AS expiresAt, i.revoked_at AS revokedAt,
+      r.status, r.requested_at AS requestedAt, r.resolved_at AS resolvedAt
+      FROM classroom_join_requests r JOIN classroom_invitations i ON i.id = r.invitation_id
+      JOIN classrooms cl ON cl.id = i.classroom_id JOIN courses c ON c.id = cl.course_id
+      JOIN users u ON u.id = cl.teacher_id WHERE r.student_id = ? ORDER BY r.requested_at DESC`).all(user.id)
   ]);
   submissions.forEach((item) => { item.rubric = parseJson(item.rubric, []); });
-  return { catalog, classrooms, submissions, certificates };
+  return { catalog, classrooms, submissions, certificates, invitationStates };
 }
 
 async function teacherOverview(db, user) {
-  const [classrooms, submissions, questionBank, versions] = await Promise.all([
+  const [classrooms, submissions, questionBank, versions, invitations, joinRequests] = await Promise.all([
     db.prepare(`SELECT cl.id, cl.name, cl.code, cl.course_id AS courseId, c.title AS courseTitle,
       cl.starts_at AS startsAt, cl.ends_at AS endsAt,
       (SELECT COUNT(*) FROM classroom_students cs WHERE cs.classroom_id = cl.id) AS studentCount
@@ -99,7 +105,22 @@ async function teacherOverview(db, user) {
       FROM question_bank WHERE teacher_id = ? ORDER BY updated_at DESC`).all(user.id),
     db.prepare(`SELECT lv.id, lv.lesson_id AS lessonId, lv.version, lv.created_at AS createdAt, l.title AS lessonTitle
       FROM lesson_versions lv JOIN lessons l ON l.id = lv.lesson_id
-      WHERE lv.teacher_id = ? ORDER BY lv.created_at DESC LIMIT 50`).all(user.id)
+      WHERE lv.teacher_id = ? ORDER BY lv.created_at DESC LIMIT 50`).all(user.id),
+    db.prepare(`SELECT i.id, i.code, i.classroom_id AS classroomId, cl.name AS classroomName,
+      i.assignment_id AS assignmentId, a.title AS assignmentTitle, i.approval_required AS approvalRequired,
+      i.usage_limit AS usageLimit, i.uses_count AS usesCount, i.expires_at AS expiresAt,
+      i.revoked_at AS revokedAt, i.created_at AS createdAt
+      FROM classroom_invitations i JOIN classrooms cl ON cl.id = i.classroom_id
+      LEFT JOIN assignments a ON a.id = i.assignment_id
+      WHERE cl.teacher_id = ? ORDER BY i.created_at DESC`).all(user.id),
+    db.prepare(`SELECT r.id, r.invitation_id AS invitationId, r.student_id AS studentId,
+      r.status, r.requested_at AS requestedAt, r.resolved_at AS resolvedAt,
+      u.name AS studentName, u.email AS studentEmail, cl.id AS classroomId, cl.name AS classroomName,
+      a.title AS assignmentTitle
+      FROM classroom_join_requests r JOIN classroom_invitations i ON i.id = r.invitation_id
+      JOIN classrooms cl ON cl.id = i.classroom_id JOIN users u ON u.id = r.student_id
+      LEFT JOIN assignments a ON a.id = i.assignment_id
+      WHERE cl.teacher_id = ? ORDER BY CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END, r.requested_at DESC`).all(user.id)
   ]);
   submissions.forEach((item) => { item.rubric = parseJson(item.rubric, []); });
   questionBank.forEach((item) => {
@@ -113,7 +134,8 @@ async function teacherOverview(db, user) {
       FROM classroom_students cs JOIN users u ON u.id = cs.student_id
       WHERE cs.classroom_id = ? ORDER BY u.name`).all(classroom.id)
   })));
-  return { classrooms, rosters, submissions, questionBank, lessonVersions: versions };
+  invitations.forEach((item) => { item.approvalRequired = Boolean(item.approvalRequired); });
+  return { classrooms, rosters, submissions, questionBank, lessonVersions: versions, invitations, joinRequests };
 }
 
 export async function platformOverview(db, user) {
@@ -237,6 +259,176 @@ async function ownedClassroom(db, teacherId, classroomId) {
   return classroom;
 }
 
+function inviteAvailability(invitation, requestStatus = null) {
+  if (invitation.revoked_at) return 'revoked';
+  if (invitation.expires_at && new Date(invitation.expires_at).getTime() <= Date.now()) return 'expired';
+  if (invitation.usage_limit != null && invitation.uses_count >= invitation.usage_limit) return 'expired';
+  return requestStatus || 'available';
+}
+
+async function invitationByCode(db, code) {
+  return db.prepare(`SELECT i.*, cl.name AS classroom_name, cl.course_id, cl.teacher_id,
+    c.title AS course_title, u.name AS teacher_name, a.title AS assignment_title
+    FROM classroom_invitations i JOIN classrooms cl ON cl.id = i.classroom_id
+    JOIN courses c ON c.id = cl.course_id JOIN users u ON u.id = cl.teacher_id
+    LEFT JOIN assignments a ON a.id = i.assignment_id WHERE i.code = ?`).get(String(code || '').trim().toUpperCase());
+}
+
+function invitationView(invitation, requestStatus = null) {
+  return {
+    id: invitation.id,
+    code: invitation.code,
+    classroomId: invitation.classroom_id,
+    classroomName: invitation.classroom_name,
+    courseId: invitation.course_id,
+    courseTitle: invitation.course_title,
+    teacherName: invitation.teacher_name,
+    assignmentId: invitation.assignment_id,
+    assignmentTitle: invitation.assignment_title,
+    approvalRequired: Boolean(invitation.approval_required),
+    expiresAt: invitation.expires_at,
+    usageLimit: invitation.usage_limit,
+    usesCount: invitation.uses_count,
+    state: inviteAvailability(invitation, requestStatus)
+  };
+}
+
+export async function createClassroomInvitation(db, teacher, classroomId, body) {
+  const classroom = await ownedClassroom(db, teacher.id, classroomId);
+  const assignmentId = cleanText(body.assignmentId, 100) || null;
+  if (assignmentId) {
+    const assignment = await db.prepare(`SELECT id FROM assignments
+      WHERE id = ? AND teacher_id = ? AND course_id = ?`).get(assignmentId, teacher.id, classroom.course_id);
+    if (!assignment) throw new HttpError(400, 'Assignment does not belong to this classroom course.');
+  }
+  const expiresAt = optionalIsoDate(body.expiresAt);
+  if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) throw new HttpError(400, 'Invitation expiration must be in the future.');
+  const usageLimit = body.usageLimit == null || body.usageLimit === '' ? null : clampInteger(body.usageLimit, 1, 10000, 1);
+  let code;
+  do code = randomBytes(5).toString('hex').toUpperCase();
+  while (await db.prepare('SELECT id FROM classroom_invitations WHERE code = ?').get(code));
+  const id = uniqueId('invitation');
+  await db.prepare(`INSERT INTO classroom_invitations
+    (id, classroom_id, assignment_id, created_by, code, approval_required, usage_limit, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, classroom.id, assignmentId, teacher.id, code, body.approvalRequired === false ? 0 : 1, usageLimit, expiresAt, now());
+  await audit(db, teacher.id, 'create', 'classroom_invitation', id, { classroomId: classroom.id, assignmentId });
+  return platformOverview(db, teacher);
+}
+
+export async function revokeClassroomInvitation(db, teacher, invitationId) {
+  const invitation = await db.prepare(`SELECT i.* FROM classroom_invitations i
+    JOIN classrooms cl ON cl.id = i.classroom_id WHERE i.id = ? AND cl.teacher_id = ?`).get(invitationId, teacher.id);
+  if (!invitation) throw new HttpError(404, 'Invitation not found.');
+  await db.prepare('UPDATE classroom_invitations SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?').run(now(), invitation.id);
+  await audit(db, teacher.id, 'revoke', 'classroom_invitation', invitation.id);
+  return platformOverview(db, teacher);
+}
+
+export async function previewClassroomInvitation(db, student, code) {
+  const invitation = await invitationByCode(db, code);
+  if (!invitation) throw new HttpError(404, 'Invitation not found.');
+  const request = await db.prepare('SELECT status FROM classroom_join_requests WHERE invitation_id = ? AND student_id = ?')
+    .get(invitation.id, student.id);
+  const membership = await db.prepare('SELECT 1 AS joined FROM classroom_students WHERE classroom_id = ? AND student_id = ?')
+    .get(invitation.classroom_id, student.id);
+  return invitationView(invitation, membership ? 'accepted' : request?.status || null);
+}
+
+async function grantInvitationAccess(transaction, invitation, studentId, resolverId = null) {
+  const consumed = await transaction.prepare(`UPDATE classroom_invitations SET uses_count = uses_count + 1
+    WHERE id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+    AND (usage_limit IS NULL OR uses_count < usage_limit)`).run(invitation.id, now());
+  if (!consumed.changes) throw new HttpError(409, 'This invitation is no longer available.');
+  await transaction.prepare('INSERT OR IGNORE INTO classroom_students (classroom_id, student_id, enrolled_at) VALUES (?, ?, ?)')
+    .run(invitation.classroom_id, studentId, now());
+  await transaction.prepare('INSERT OR IGNORE INTO enrollments (user_id, course_id, enrolled_at) VALUES (?, ?, ?)')
+    .run(studentId, invitation.course_id, now());
+  if (invitation.assignment_id) {
+    await transaction.prepare('INSERT OR IGNORE INTO assignment_students (assignment_id, student_id) VALUES (?, ?)')
+      .run(invitation.assignment_id, studentId);
+  }
+  await transaction.prepare(`UPDATE classroom_join_requests SET status = 'accepted', resolved_at = ?, resolved_by = ?
+    WHERE invitation_id = ? AND student_id = ?`).run(now(), resolverId, invitation.id, studentId);
+}
+
+export async function joinClassroom(db, student, code) {
+  const invitation = await invitationByCode(db, code);
+  if (!invitation) throw new HttpError(404, 'Invitation not found.');
+  const previous = await db.prepare('SELECT * FROM classroom_join_requests WHERE invitation_id = ? AND student_id = ?')
+    .get(invitation.id, student.id);
+  const membership = await db.prepare('SELECT 1 AS joined FROM classroom_students WHERE classroom_id = ? AND student_id = ?')
+    .get(invitation.classroom_id, student.id);
+  if (membership || previous?.status === 'accepted') return platformOverview(db, student);
+  const state = inviteAvailability(invitation, previous?.status || null);
+  if (state === 'revoked') throw new HttpError(410, 'This invitation was revoked.');
+  if (state === 'expired') throw new HttpError(410, 'This invitation expired or reached its usage limit.');
+  if (previous?.status === 'rejected') throw new HttpError(409, 'This access request was rejected.');
+  if (previous?.status === 'pending') return platformOverview(db, student);
+  const requestId = uniqueId('join-request');
+  await inTransaction(db, async (transaction) => {
+    await transaction.prepare(`INSERT INTO classroom_join_requests
+      (id, invitation_id, student_id, status, requested_at) VALUES (?, ?, ?, 'pending', ?)`)
+      .run(requestId, invitation.id, student.id, now());
+    if (!invitation.approval_required) await grantInvitationAccess(transaction, invitation, student.id);
+  });
+  if (invitation.approval_required) {
+    await notify(db, invitation.teacher_id, 'join_request', `${student.name} requested classroom access`, `Review the request for ${invitation.classroom_name}.`, '/teacher');
+    await audit(db, student.id, 'request_access', 'classroom', invitation.classroom_id, { invitationId: invitation.id });
+  } else {
+    await notify(db, student.id, 'classroom', `You joined ${invitation.classroom_name}`, 'Your classroom is ready.', `/classrooms/${invitation.classroom_id}`);
+    await audit(db, student.id, 'join', 'classroom', invitation.classroom_id, { invitationId: invitation.id });
+  }
+  return platformOverview(db, student);
+}
+
+export async function resolveJoinRequest(db, teacher, requestId, body) {
+  const request = await db.prepare(`SELECT r.*, i.classroom_id, i.assignment_id, i.expires_at, i.revoked_at,
+    i.usage_limit, i.uses_count, cl.course_id, cl.name AS classroom_name
+    FROM classroom_join_requests r JOIN classroom_invitations i ON i.id = r.invitation_id
+    JOIN classrooms cl ON cl.id = i.classroom_id WHERE r.id = ? AND cl.teacher_id = ?`).get(requestId, teacher.id);
+  if (!request) throw new HttpError(404, 'Join request not found.');
+  if (request.status !== 'pending') throw new HttpError(409, 'This join request was already resolved.');
+  const status = body.status;
+  if (!['accepted', 'rejected'].includes(status)) throw new HttpError(400, 'Choose accepted or rejected.');
+  if (status === 'accepted') {
+    await inTransaction(db, (transaction) => grantInvitationAccess(transaction, { ...request, id: request.invitation_id }, request.student_id, teacher.id));
+  } else {
+    await db.prepare(`UPDATE classroom_join_requests SET status = 'rejected', resolved_at = ?, resolved_by = ? WHERE id = ?`)
+      .run(now(), teacher.id, request.id);
+  }
+  await notify(db, request.student_id, 'join_request', `${request.classroom_name} request ${status}`, status === 'accepted' ? 'You can now open the classroom.' : 'Your teacher did not approve this request.', '/student');
+  await audit(db, teacher.id, status === 'accepted' ? 'approve' : 'reject', 'classroom_join_request', request.id);
+  return platformOverview(db, teacher);
+}
+
+async function removeClassroomAccess(db, classroom, studentId) {
+  await inTransaction(db, async (transaction) => {
+    await transaction.prepare('DELETE FROM classroom_students WHERE classroom_id = ? AND student_id = ?').run(classroom.id, studentId);
+    await transaction.prepare(`DELETE FROM assignment_students WHERE student_id = ? AND assignment_id IN
+      (SELECT assignment_id FROM classroom_invitations WHERE classroom_id = ? AND assignment_id IS NOT NULL)`)
+      .run(studentId, classroom.id);
+    const other = await transaction.prepare(`SELECT 1 AS joined FROM classroom_students cs JOIN classrooms cl ON cl.id = cs.classroom_id
+      WHERE cs.student_id = ? AND cl.course_id = ? LIMIT 1`).get(studentId, classroom.course_id);
+    if (!other) {
+      await transaction.prepare(`DELETE FROM assignment_students WHERE student_id = ? AND assignment_id IN
+        (SELECT id FROM assignments WHERE course_id = ?)`).run(studentId, classroom.course_id);
+      await transaction.prepare(`DELETE FROM enrollments WHERE user_id = ? AND course_id = ? AND EXISTS
+        (SELECT 1 FROM courses WHERE id = ? AND enrollment_mode = 'invite')`).run(studentId, classroom.course_id, classroom.course_id);
+    }
+  });
+}
+
+export async function leaveClassroom(db, student, classroomId) {
+  const classroom = await db.prepare(`SELECT cl.* FROM classrooms cl JOIN classroom_students cs ON cs.classroom_id = cl.id
+    WHERE cl.id = ? AND cs.student_id = ?`).get(classroomId, student.id);
+  if (!classroom) throw new HttpError(404, 'Classroom membership not found.');
+  await removeClassroomAccess(db, classroom, student.id);
+  await notify(db, classroom.teacher_id, 'classroom', `${student.name} left ${classroom.name}`, 'The classroom roster was updated.', '/teacher');
+  await audit(db, student.id, 'leave', 'classroom', classroom.id);
+  return platformOverview(db, student);
+}
+
 export async function addClassroomStudent(db, teacher, classroomId, studentId) {
   const classroom = await ownedClassroom(db, teacher.id, classroomId);
   const student = await db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(studentId);
@@ -254,7 +446,8 @@ export async function addClassroomStudent(db, teacher, classroomId, studentId) {
 
 export async function removeClassroomStudent(db, teacher, classroomId, studentId) {
   const classroom = await ownedClassroom(db, teacher.id, classroomId);
-  await db.prepare('DELETE FROM classroom_students WHERE classroom_id = ? AND student_id = ?').run(classroom.id, studentId);
+  await removeClassroomAccess(db, classroom, studentId);
+  await notify(db, studentId, 'classroom', `Removed from ${classroom.name}`, 'Your classroom access was revoked.', '/student');
   await audit(db, teacher.id, 'remove_student', 'classroom', classroom.id, { studentId });
   return platformOverview(db, teacher);
 }

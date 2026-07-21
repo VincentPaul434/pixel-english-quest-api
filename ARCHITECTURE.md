@@ -8,8 +8,8 @@ This document defines the backend organization standard for the English Pixel Ac
 pixel-english-quest-api/
   src/
     config/
-      app-config.js              - Environment, CORS, rate limit, port, and database file config
-      database.js                - Database bootstrap export used by the application
+      app-config.js              - Environment, CORS, rate limit, and port config
+      database.js                - Supabase Postgres connection and persistence helpers
     shared/
       data-utils.js              - Reusable parsing, text cleaning, integer clamping, and date helpers
       http.js                    - HTTP error class, response helpers, CORS headers, and request body parsing
@@ -53,7 +53,7 @@ pixel-english-quest-api/
     app.js                       - Application bootstrap, rate limiting, API mounting, and shared error handling
     server.js                    - Application entry point establishing the HTTP listener
   scripts/
-    setup-supabase.js            - Optional Supabase/Postgres schema setup script
+    setup-supabase.js            - Supabase Postgres schema setup script
   supabase/
     schema.sql                   - Cloud database schema
   test/
@@ -134,7 +134,7 @@ The API uses Node's built-in HTTP server rather than Express, but the source now
 - Feature route files use `src/shared/routing.js` so each feature declares endpoints without duplicating matching loops.
 - `src/shared/middleware` contains request guards and centralized error response behavior.
 - `src/shared/utils` contains operational errors and logging.
-- `src/config/database.js` is the database bootstrap entry and owns SQLite schema creation, migrations, demo account setup, and low-level persistence helpers.
+- `src/config/database.js` owns the Supabase Postgres connection pool, query adaptation, transactions, and low-level persistence helpers.
 - `src/dashboard/dashboard.service.js` is a shared domain service because both student and teacher workflows return dashboard-shaped data.
 - `src/lesson/lesson.seed.js` keeps demo lesson and quick quiz content beside the lesson feature instead of in a legacy module folder.
 

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { defaultDatabaseFile, port, rateLimit } from './config/app-config.js';
+import { port, rateLimit } from './config/app-config.js';
 import { createDatabase } from './config/database.js';
 import { handleApiRequest } from './routes/index.js';
 import { HttpError, json } from './shared/http.js';
@@ -11,9 +11,7 @@ import { logRequest } from './shared/utils/logger.js';
 export { port };
 
 function application(options = {}) {
-  const databaseFile = options.databaseFile ?? defaultDatabaseFile;
-  const databaseUrl = options.databaseUrl ?? (options.databaseFile ? '' : process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || '');
-  const db = createDatabase({ filename: databaseFile, databaseUrl });
+  const db = createDatabase({ databaseUrl: options.databaseUrl });
   const limits = new Map();
   const handler = async (req, res) => {
     const requestId = randomUUID();

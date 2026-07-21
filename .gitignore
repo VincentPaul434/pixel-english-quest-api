@@ -1,7 +1,4 @@
 node_modules/
-academy.db
-academy.db-shm
-academy.db-wal
 coverage/
 .env
 *.log

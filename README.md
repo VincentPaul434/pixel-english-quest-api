@@ -1,6 +1,6 @@
 # Pixel English Quest API
 
-The database-backed API for the English Pixel Academy learning system. It runs on local SQLite or a Supabase Postgres database through the same service layer.
+The database-backed API for the English Pixel Academy learning system. Supabase Postgres is its only persistence layer.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the feature-based backend organization standard and current source layout.
 
@@ -8,16 +8,17 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the feature-based backend organizat
 
 - Node.js 24 or newer
 - npm dependencies installed with `npm install`
-- Optional Supabase Postgres project for cloud database setup
+- A Supabase Postgres project
 
 ## Start locally
 
 ```bash
 npm install
+npm run supabase:setup
 npm run dev
 ```
 
-The API listens on `http://localhost:3001`. On first start it creates `academy.db`, seeds the starter curriculum, and safely imports the previous `data.json` demo profile when present.
+Set `SUPABASE_DB_URL` (or `DATABASE_URL`) before running the setup command. The API then listens on `http://localhost:3001`; it exits at startup when no database connection string is configured.
 
 ## Demo accounts
 
@@ -36,10 +37,11 @@ npm test
 npm start
 ```
 
+End-to-end tests are skipped unless `TEST_DATABASE_URL` points to a dedicated Supabase Postgres test database. The suite truncates and reseeds that database before every workflow; never point it at development or production data.
+
 ## Configuration
 
 - `PORT`: HTTP port, default `3001`
-- `ACADEMY_DB_FILE`: SQLite file path, default `academy.db`
 - `SUPABASE_DB_URL` or `DATABASE_URL`: Supabase Postgres connection string used by setup and the live API runtime
 - `PGSSLMODE`: set to `disable` only for a non-SSL local Postgres database; Supabase should use SSL
 - `ALLOWED_ORIGINS`: comma-separated frontend origins
@@ -56,7 +58,7 @@ Create a Supabase project, then copy the Postgres connection string from **Proje
 SUPABASE_DB_URL="postgresql://postgres:[YOUR-PASSWORD]@db.your-project.supabase.co:5432/postgres" npm run supabase:setup
 ```
 
-The setup command runs `supabase/schema.sql` and seeds the same demo curriculum and demo accounts used by the local SQLite database. If the database already has users, it creates any missing tables but leaves existing data unchanged.
+The setup command runs `supabase/schema.sql` and seeds the demo curriculum and accounts. If the database already has users, it creates any missing tables but leaves existing data unchanged.
 
 Run `npm run supabase:verify` for a read-only check of student, teacher, platform, and admin queries against the configured Supabase database.
 
@@ -64,7 +66,7 @@ Run `npm run supabase:verify` for a read-only check of student, teacher, platfor
 
 - Password-hashed student and teacher accounts, email verification, password recovery, and optional authenticator MFA
 - Expiring bearer sessions and role authorization
-- Dual SQLite/Supabase Postgres persistence, migrations, transactions, pooling, and protected Supabase tables
+- Supabase Postgres persistence, transactions, connection pooling, and protected tables
 - Course catalog, prerequisites, self-enrollment, classrooms, rosters, attendance, and calendar events
 - Course, module, lesson, question-bank, version-history, duplication, and ordering tools
 - Draft, published, and archived content states

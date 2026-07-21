@@ -53,7 +53,7 @@ export async function updateTeacherCourse(db, teacher, courseId, body) {
     throw new HttpError(400, 'Publish at least one lesson before publishing the course.');
   }
   await updateCourse(db, course.id, input);
-  if (input.status === 'published') await enrollAllStudentsInCourse(db, course.id);
+  if (input.status === 'published' && input.enrollmentMode === 'self') await enrollAllStudentsInCourse(db, course.id);
   return dashboardFor(db, teacher);
 }
 

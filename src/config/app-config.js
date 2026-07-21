@@ -1,9 +1,3 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export const defaultDatabaseFile = process.env.ACADEMY_DB_FILE || path.join(__dirname, '..', '..', 'academy.db');
 export const port = Number(process.env.PORT) || 3001;
 export const maxBodyBytes = 1024 * 1024;
 export const sessionDays = 30;

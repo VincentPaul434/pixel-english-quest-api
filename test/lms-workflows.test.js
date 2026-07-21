@@ -1,21 +1,43 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 import { DEMO_ACCOUNTS } from '../src/config/database.js';
 import { createServer } from '../index.js';
 
+const testDatabaseUrl = process.env.TEST_DATABASE_URL || '';
+const integrationTest = testDatabaseUrl ? test : test.skip;
+const projectDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+async function resetTestDatabase() {
+  const ssl = process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false };
+  const client = new pg.Client({ connectionString: testDatabaseUrl, ssl });
+  await client.connect();
+  try {
+    await client.query('TRUNCATE TABLE users CASCADE');
+  } finally {
+    await client.end();
+  }
+
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, [path.join(projectDirectory, 'scripts', 'setup-supabase.js')], {
+      cwd: projectDirectory,
+      env: { ...process.env, SUPABASE_DB_URL: testDatabaseUrl, DATABASE_URL: '' }
+    }, (error) => error ? reject(error) : resolve());
+  });
+}
+
 async function academy(t) {
-  const directory = await mkdtemp(path.join(tmpdir(), 'pixel-academy-'));
-  const server = createServer({ databaseFile: path.join(directory, 'test.db') });
+  await resetTestDatabase();
+  const server = createServer({ databaseUrl: testDatabaseUrl });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert(address && typeof address === 'object');
   const baseUrl = `http://127.0.0.1:${address.port}`;
   t.after(async () => {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    await rm(directory, { recursive: true, force: true });
   });
 
   const call = async (route, { token, method = 'GET', body, headers = {} } = {}) => {
@@ -35,7 +57,7 @@ async function academy(t) {
   return { call, login };
 }
 
-test('student sessions isolate progress and lesson mastery records every attempt', async (t) => {
+integrationTest('student sessions isolate progress and lesson mastery records every attempt', async (t) => {
   const { call, login } = await academy(t);
 
   const health = await call('/api/health', { headers: { Origin: 'http://127.0.0.1:5173' } });
@@ -83,7 +105,7 @@ test('student sessions isolate progress and lesson mastery records every attempt
   assert.equal(repeat.data.dashboard.lessons.find((lesson) => lesson.id === 'moonlit-map').progress.attempts, 3);
 });
 
-test('quick quiz awards daily XP only once per question', async (t) => {
+integrationTest('quick quiz awards daily XP only once per question', async (t) => {
   const { call, login } = await academy(t);
   const student = await login(DEMO_ACCOUNTS.student);
   const question = (await call('/api/quick-quiz', { token: student.token })).data;
@@ -111,7 +133,7 @@ test('quick quiz awards daily XP only once per question', async (t) => {
   assert.equal(replay.data.dashboard.profile.xp, 20);
 });
 
-test('teacher can build, publish, assign, and analyze a lesson', async (t) => {
+integrationTest('teacher can build, publish, assign, and analyze a lesson', async (t) => {
   const { call, login } = await academy(t);
   const teacher = await login(DEMO_ACCOUNTS.teacher);
   const student = await login(DEMO_ACCOUNTS.student);
@@ -119,7 +141,7 @@ test('teacher can build, publish, assign, and analyze a lesson', async (t) => {
   const createdCourses = await call('/api/teacher/courses', {
     token: teacher.token,
     method: 'POST',
-    body: { title: 'Teacher Created Course', description: 'A complete authoring workflow.', difficulty: 'Intermediate' }
+    body: { title: 'Teacher Created Course', description: 'A complete authoring workflow.', difficulty: 'Intermediate', enrollmentMode: 'self' }
   });
   assert.equal(createdCourses.response.status, 201);
   const course = createdCourses.data.courses.find((item) => item.title === 'Teacher Created Course');
@@ -183,7 +205,7 @@ test('teacher can build, publish, assign, and analyze a lesson', async (t) => {
   assert.equal(analytics.data.questions[0].correctRate, 100);
 });
 
-test('classroom, discussion, submission, grading, calendar, reports, and admin workflows are connected', async (t) => {
+integrationTest('classroom, discussion, submission, grading, calendar, reports, and admin workflows are connected', async (t) => {
   const { call, login } = await academy(t);
   const teacher = await login(DEMO_ACCOUNTS.teacher);
   const student = await login(DEMO_ACCOUNTS.student);
@@ -242,7 +264,91 @@ test('classroom, discussion, submission, grading, calendar, reports, and admin w
   assert(admin.data.logs.some((item) => item.entityType === 'submission'));
 });
 
-test('lesson versions, completion certificates, and account recovery work end to end', async (t) => {
+integrationTest('classroom invitations enforce approval, ownership, assignment scope, revocation, and leaving', async (t) => {
+  const { call, login } = await academy(t);
+  const teacher = await login(DEMO_ACCOUNTS.teacher);
+  const student = await login(DEMO_ACCOUNTS.student);
+  const otherTeacherResult = await call('/api/auth/register', {
+    method: 'POST', body: { name: 'Other Teacher', email: 'other.teacher@example.com', password: 'OtherTeach123!', role: 'teacher' }
+  });
+  assert.equal(otherTeacherResult.response.status, 201);
+  const otherTeacher = otherTeacherResult.data;
+
+  const created = await call('/api/teacher/courses', {
+    token: teacher.token, method: 'POST', body: { title: 'Invitation Only English', enrollmentMode: 'invite' }
+  });
+  const course = created.data.courses.find((item) => item.title === 'Invitation Only English');
+  const lessonResult = await call('/api/teacher/lessons', {
+    token: teacher.token, method: 'POST', body: {
+      courseId: course.id, title: 'Private Classroom Lesson', category: 'grammar', passage: 'Choose the right word.', status: 'published',
+      questions: [{ prompt: 'We ___ together.', type: 'fill_blank', answer: 'learn' }]
+    }
+  });
+  const lessonId = lessonResult.data.lesson.id;
+  await call(`/api/teacher/courses/${course.id}`, {
+    token: teacher.token, method: 'PUT', body: { status: 'published', enrollmentMode: 'invite' }
+  });
+  const beforeInvite = await call('/api/dashboard', { token: student.token });
+  assert(!beforeInvite.data.lessons.some((item) => item.id === lessonId));
+
+  const assignmentResult = await call(`/api/teacher/lessons/${lessonId}/assign`, {
+    token: teacher.token, method: 'POST', body: { title: 'Private Invitation Assignment', studentIds: [] }
+  });
+  assert.equal(assignmentResult.response.status, 201);
+  const assignment = assignmentResult.data.assignments.find((item) => item.title === 'Private Invitation Assignment');
+
+  const classroomResult = await call('/api/teacher/classrooms', {
+    token: teacher.token, method: 'POST', body: { courseId: course.id, name: 'Invitation Room' }
+  });
+  const classroom = classroomResult.data.classrooms.find((item) => item.name === 'Invitation Room');
+  const invitationResult = await call(`/api/teacher/classrooms/${classroom.id}/invitations`, {
+    token: teacher.token, method: 'POST', body: { assignmentId: assignment.id, approvalRequired: true, usageLimit: 1, expiresAt: new Date(Date.now() + 86400000).toISOString() }
+  });
+  assert.equal(invitationResult.response.status, 201);
+  const invitation = invitationResult.data.invitations[0];
+
+  const preview = await call(`/api/invitations/${invitation.code}`, { token: student.token });
+  assert.equal(preview.data.state, 'available');
+  assert.equal(preview.data.teacherName, teacher.user.name);
+  assert.equal(preview.data.assignmentTitle, assignment.title);
+
+  const requested = await call(`/api/invitations/${invitation.code}/join`, { token: student.token, method: 'POST' });
+  assert.equal(requested.response.status, 200);
+  assert.equal(requested.data.invitationStates[0].status, 'pending');
+  const stillPrivate = await call(`/api/assignments/${assignment.id}/submissions`, {
+    token: student.token, method: 'POST', body: { textContent: 'I should not have access yet.' }
+  });
+  assert.equal(stillPrivate.response.status, 404);
+
+  const pending = await call('/api/platform', { token: teacher.token });
+  const joinRequest = pending.data.joinRequests.find((item) => item.status === 'pending');
+  const crossTeacher = await call(`/api/teacher/join-requests/${joinRequest.id}`, {
+    token: otherTeacher.token, method: 'PUT', body: { status: 'accepted' }
+  });
+  assert.equal(crossTeacher.response.status, 404);
+
+  const approved = await call(`/api/teacher/join-requests/${joinRequest.id}`, {
+    token: teacher.token, method: 'PUT', body: { status: 'accepted' }
+  });
+  assert.equal(approved.response.status, 200);
+  assert.equal(approved.data.invitations.find((item) => item.id === invitation.id).usesCount, 1);
+  const afterApproval = await call('/api/dashboard', { token: student.token });
+  assert(afterApproval.data.lessons.some((item) => item.id === lessonId));
+  assert(afterApproval.data.assignments.some((item) => item.id === assignment.id));
+
+  const left = await call(`/api/classrooms/${classroom.id}/membership`, { token: student.token, method: 'DELETE' });
+  assert.equal(left.response.status, 200);
+  const afterLeaving = await call('/api/dashboard', { token: student.token });
+  assert(!afterLeaving.data.lessons.some((item) => item.id === lessonId));
+  assert(!afterLeaving.data.assignments.some((item) => item.id === assignment.id));
+
+  const revoked = await call(`/api/teacher/invitations/${invitation.id}`, { token: teacher.token, method: 'DELETE' });
+  assert.equal(revoked.response.status, 200);
+  const revokedPreview = await call(`/api/invitations/${invitation.code}`, { token: student.token });
+  assert.equal(revokedPreview.data.state, 'revoked');
+});
+
+integrationTest('lesson versions, completion certificates, and account recovery work end to end', async (t) => {
   const { call, login } = await academy(t);
   const teacher = await login(DEMO_ACCOUNTS.teacher);
   const student = await login(DEMO_ACCOUNTS.student);

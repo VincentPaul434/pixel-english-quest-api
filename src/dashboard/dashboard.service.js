@@ -157,7 +157,7 @@ export async function teacherDashboard(db, teacher) {
     JOIN courses c ON c.id = e.course_id AND c.teacher_id = ?
     LEFT JOIN progress p ON p.user_id = u.id
       GROUP BY u.id ORDER BY u.name`).all(teacher.id),
-    db.prepare(`SELECT a.id, a.title, a.due_at AS dueAt, l.title AS lessonTitle, c.title AS courseTitle,
+    db.prepare(`SELECT a.id, a.title, a.course_id AS courseId, a.due_at AS dueAt, l.title AS lessonTitle, c.title AS courseTitle,
       (SELECT COUNT(*) FROM assignment_students ast WHERE ast.assignment_id = a.id) AS studentCount,
       (SELECT COUNT(*) FROM assignment_students ast WHERE ast.assignment_id = a.id AND ast.status = 'completed') AS completedCount
     FROM assignments a JOIN lessons l ON l.id = a.lesson_id JOIN courses c ON c.id = a.course_id
