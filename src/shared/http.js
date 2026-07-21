@@ -49,6 +49,22 @@ export function created(context, body) {
   send(context, 201, body);
 }
 
+function csvCell(value) {
+  const normalized = String(value ?? '');
+  return /[",\r\n]/.test(normalized) ? `"${normalized.replaceAll('"', '""')}"` : normalized;
+}
+
+export function csv(context, filename, rows) {
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  const content = [columns.map(csvCell).join(','), ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(','))].join('\r\n');
+  context.res.writeHead(200, {
+    ...responseHeaders(context.req, context.requestId),
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`
+  });
+  context.res.end(content);
+}
+
 export async function bodyOf(req) {
   const chunks = [];
   let size = 0;

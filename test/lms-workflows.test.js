@@ -24,7 +24,7 @@ async function academy(t) {
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
-    const data = await response.json();
+    const data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : await response.text();
     return { response, data };
   };
   const login = async (account) => {
@@ -181,4 +181,120 @@ test('teacher can build, publish, assign, and analyze a lesson', async (t) => {
   assert.equal(analytics.data.summary.attempts, 1);
   assert.equal(analytics.data.summary.averageScore, 100);
   assert.equal(analytics.data.questions[0].correctRate, 100);
+});
+
+test('classroom, discussion, submission, grading, calendar, reports, and admin workflows are connected', async (t) => {
+  const { call, login } = await academy(t);
+  const teacher = await login(DEMO_ACCOUNTS.teacher);
+  const student = await login(DEMO_ACCOUNTS.student);
+
+  const classroom = await call('/api/teacher/classrooms', {
+    token: teacher.token, method: 'POST', body: { courseId: 'course-english-foundations', name: 'Foundations A' }
+  });
+  assert.equal(classroom.response.status, 201);
+  const classroomId = classroom.data.classrooms.find((item) => item.name === 'Foundations A').id;
+
+  const roster = await call(`/api/teacher/classrooms/${classroomId}/students/${student.user.id}`, {
+    token: teacher.token, method: 'POST'
+  });
+  assert.equal(roster.response.status, 200);
+  assert(roster.data.rosters.find((item) => item.classroomId === classroomId).students.some((item) => item.id === student.user.id));
+
+  const discussion = await call('/api/courses/course-english-foundations/discussions', {
+    token: student.token, method: 'POST', body: { body: 'Can we review the moonlit map vocabulary?' }
+  });
+  assert.equal(discussion.response.status, 201);
+  assert.equal(discussion.data.length, 1);
+
+  const submission = await call('/api/assignments/assignment-welcome/submissions', {
+    token: student.token, method: 'POST', body: { textContent: 'My completed reflection.' }
+  });
+  assert.equal(submission.response.status, 201);
+  const submissionId = submission.data.submissions[0].id;
+
+  const grade = await call(`/api/teacher/submissions/${submissionId}/grade`, {
+    token: teacher.token, method: 'PUT', body: { score: 92, feedback: 'Clear and thoughtful.', rubric: [{ criterion: 'Clarity', points: 46 }] }
+  });
+  assert.equal(grade.response.status, 200);
+  assert.equal(grade.data.submissions.find((item) => item.id === submissionId).score, 92);
+
+  const calendar = await call('/api/teacher/calendar', {
+    token: teacher.token, method: 'POST', body: {
+      courseId: 'course-english-foundations', classroomId, title: 'Live review', startsAt: new Date(Date.now() + 86400000).toISOString()
+    }
+  });
+  assert.equal(calendar.response.status, 201);
+  assert(calendar.data.events.some((item) => item.title === 'Live review'));
+
+  const bank = await call('/api/teacher/question-bank', {
+    token: teacher.token, method: 'POST', body: { prompt: 'Arrange the words.', type: 'ordering', choices: ['I', 'learn', 'English'], answer: [0, 1, 2], tags: ['grammar'] }
+  });
+  assert.equal(bank.response.status, 201);
+  assert(bank.data.questionBank.some((item) => item.type === 'ordering'));
+
+  const report = await call('/api/teacher/reports.csv', { token: teacher.token });
+  assert.equal(report.response.status, 200);
+  assert.match(report.data, /course,student,email/i);
+
+  const admin = await call('/api/admin/dashboard', { token: teacher.token });
+  assert.equal(admin.response.status, 200);
+  assert(admin.data.summary.users >= 2);
+  assert(admin.data.logs.some((item) => item.entityType === 'submission'));
+});
+
+test('lesson versions, completion certificates, and account recovery work end to end', async (t) => {
+  const { call, login } = await academy(t);
+  const teacher = await login(DEMO_ACCOUNTS.teacher);
+  const student = await login(DEMO_ACCOUNTS.student);
+
+  const created = await call('/api/teacher/courses', {
+    token: teacher.token, method: 'POST', body: { title: 'Certificate Sprint', catalogVisibility: 'public', enrollmentMode: 'self' }
+  });
+  const course = created.data.courses.find((item) => item.title === 'Certificate Sprint');
+  const lessonResult = await call('/api/teacher/lessons', {
+    token: teacher.token, method: 'POST', body: {
+      courseId: course.id, title: 'One Step', category: 'grammar', passage: 'Finish the sentence.', status: 'published',
+      questions: [
+        { prompt: 'I ___ daily.', type: 'fill_blank', answer: 'learn', points: 2 },
+        { prompt: 'Order the sentence.', type: 'ordering', choices: ['I', 'learn', 'daily'], answer: [0, 1, 2], points: 2 },
+        { prompt: 'Match the sequence.', type: 'matching', choices: ['hello', 'greeting'], answer: [0, 1] },
+        { prompt: 'How will you practise?', type: 'essay', answer: 'I will practise daily.', points: 3 }
+      ]
+    }
+  });
+  const lessonId = lessonResult.data.lesson.id;
+  await call(`/api/teacher/courses/${course.id}`, {
+    token: teacher.token, method: 'PUT', body: { status: 'published', catalogVisibility: 'public', enrollmentMode: 'self' }
+  });
+
+  const updated = await call(`/api/teacher/lessons/${lessonId}`, {
+    token: teacher.token, method: 'PUT', body: { title: 'One Confident Step' }
+  });
+  assert.equal(updated.response.status, 200);
+  const versions = await call(`/api/teacher/lessons/${lessonId}/versions`, { token: teacher.token });
+  assert.equal(versions.response.status, 200);
+  assert.equal(versions.data.length, 1);
+
+  const completed = await call(`/api/lessons/${lessonId}/complete`, {
+    token: student.token, method: 'POST', body: { answers: ['learn', [0, 1, 2], [0, 1], 'I will speak and read every day.'] }
+  });
+  assert.equal(completed.response.status, 200);
+  assert.equal(completed.data.requiresManualReview, true);
+  assert.equal(completed.data.score, 100);
+  const platform = await call('/api/platform', { token: student.token });
+  const certificate = platform.data.certificates.find((item) => item.courseId === course.id);
+  assert(certificate);
+  const verified = await call(`/api/certificates/${certificate.verificationCode}`);
+  assert.equal(verified.data.valid, true);
+  assert.equal(verified.data.courseTitle, 'Certificate Sprint');
+
+  const reset = await call('/api/auth/password-reset/request', { method: 'POST', body: { email: DEMO_ACCOUNTS.student.email } });
+  assert.equal(reset.response.status, 200);
+  assert(reset.data.developmentToken);
+  const confirmed = await call('/api/auth/password-reset/confirm', {
+    method: 'POST', body: { token: reset.data.developmentToken, password: 'NewLearn456!' }
+  });
+  assert.equal(confirmed.response.status, 200);
+  const relogin = await login({ email: DEMO_ACCOUNTS.student.email, password: 'NewLearn456!' });
+  assert.equal(relogin.user.id, student.user.id);
 });

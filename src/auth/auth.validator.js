@@ -23,6 +23,15 @@ export function validateRegistration(body) {
 export function validateLogin(body) {
   return {
     email: cleanText(body.email, 160).toLocaleLowerCase(),
-    password: String(body.password || '')
+    password: String(body.password || ''),
+    mfaCode: cleanText(body.mfaCode, 12)
   };
+}
+
+export function validatePassword(password) {
+  const value = String(password || '');
+  if (value.length < 8 || !/[A-Za-z]/.test(value) || !/\d/.test(value)) {
+    throw new AppError(400, 'Password needs at least 8 characters, including a letter and number.');
+  }
+  return value;
 }

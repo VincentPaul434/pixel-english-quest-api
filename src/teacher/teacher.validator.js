@@ -7,7 +7,11 @@ export function validateCourseCreate(body) {
   return {
     title,
     description: cleanText(body.description, 2000),
-    difficulty: cleanText(body.difficulty, 40) || 'Beginner'
+    difficulty: cleanText(body.difficulty, 40) || 'Beginner',
+    catalogVisibility: body.catalogVisibility === 'public' ? 'public' : 'private',
+    enrollmentMode: ['invite', 'self'].includes(body.enrollmentMode) ? body.enrollmentMode : 'invite',
+    certificateEnabled: body.certificateEnabled !== false,
+    prerequisiteCourseId: cleanText(body.prerequisiteCourseId, 100) || null
   };
 }
 
@@ -18,7 +22,11 @@ export function validateCourseUpdate(body, course) {
     title,
     description: cleanText(body.description ?? course.description, 2000),
     difficulty: cleanText(body.difficulty ?? course.difficulty, 40),
-    status: ['draft', 'published', 'archived'].includes(body.status) ? body.status : course.status
+    status: ['draft', 'published', 'archived'].includes(body.status) ? body.status : course.status,
+    catalogVisibility: ['private', 'public'].includes(body.catalogVisibility) ? body.catalogVisibility : course.catalog_visibility,
+    enrollmentMode: ['invite', 'self'].includes(body.enrollmentMode) ? body.enrollmentMode : course.enrollment_mode,
+    certificateEnabled: body.certificateEnabled === undefined ? Boolean(course.certificate_enabled) : Boolean(body.certificateEnabled),
+    prerequisiteCourseId: body.prerequisiteCourseId === undefined ? course.prerequisite_course_id : cleanText(body.prerequisiteCourseId, 100) || null
   };
 }
 
@@ -35,7 +43,11 @@ export function validateAssignment(body, eligible, lesson) {
   return {
     studentIds,
     title: cleanText(body.title, 160) || lesson.title,
-    dueAt: optionalIsoDate(body.dueAt)
+    dueAt: optionalIsoDate(body.dueAt),
+    instructions: cleanText(body.instructions, 5000),
+    submissionType: ['quiz', 'text', 'file', 'mixed'].includes(body.submissionType) ? body.submissionType : 'quiz',
+    maxScore: Math.min(1000, Math.max(1, Number(body.maxScore) || 100)),
+    allowResubmission: body.allowResubmission !== false
   };
 }
 

@@ -12,7 +12,7 @@ export function isPublishedLesson(lesson) {
   return lesson?.status === 'published';
 }
 
-export function lessonFromRow(db, row, includeAnswers = false) {
+export async function lessonFromRow(db, row, includeAnswers = false) {
   return {
     id: row.id,
     courseId: row.course_id,
@@ -34,6 +34,12 @@ export function lessonFromRow(db, row, includeAnswers = false) {
     objectives: parseJson(row.objectives_json, []),
     xpReward: row.xp_reward,
     masteryScore: row.mastery_score,
+    attemptLimit: row.attempt_limit || 0,
+    shuffleQuestions: Boolean(row.shuffle_questions),
+    availableFrom: row.available_from,
+    availableUntil: row.available_until,
+    publishAt: row.publish_at,
+    version: row.version || 1,
     position: row.position,
     status: row.status,
     completed: row.progress_status === 'completed',
@@ -47,7 +53,7 @@ export function lessonFromRow(db, row, includeAnswers = false) {
       bookmarked: Boolean(row.bookmarked),
       notes: row.notes || ''
     } : null,
-    questions: lessonQuestions(db, row.id, includeAnswers)
+    questions: await lessonQuestions(db, row.id, includeAnswers)
   };
 }
 
@@ -55,15 +61,24 @@ export function normalizeQuestions(rawQuestions, publishing = false) {
   if (!Array.isArray(rawQuestions)) return [];
   const questions = rawQuestions.slice(0, 50).map((raw, index) => {
     const prompt = cleanText(raw.prompt, 500);
-    const type = ['multiple_choice', 'true_false', 'fill_blank'].includes(raw.type) ? raw.type : 'multiple_choice';
-    const choices = type === 'true_false' ? ['True', 'False'] : Array.isArray(raw.choices) ? raw.choices.map((item) => cleanText(item, 200)).filter(Boolean).slice(0, 8) : [];
-    const answer = type === 'fill_blank' ? cleanText(raw.answer, 200) : Number(raw.answer);
+    const type = ['multiple_choice', 'true_false', 'fill_blank', 'essay', 'matching', 'ordering'].includes(raw.type) ? raw.type : 'multiple_choice';
+    const choices = type === 'true_false' ? ['True', 'False'] : Array.isArray(raw.choices)
+      ? raw.choices.map((item) => typeof item === 'object' ? item : cleanText(item, 200)).filter(Boolean).slice(0, 20) : [];
+    const answer = ['fill_blank', 'essay'].includes(type) ? cleanText(raw.answer, 2000)
+      : ['matching', 'ordering'].includes(type) ? (Array.isArray(raw.answer) ? raw.answer.slice(0, 20) : []) : Number(raw.answer);
     if (!prompt) throw new HttpError(400, `Question ${index + 1} needs a prompt.`);
-    if (type !== 'fill_blank' && (choices.length < 2 || !Number.isInteger(answer) || answer < 0 || answer >= choices.length)) {
+    if (['multiple_choice', 'true_false'].includes(type) && (choices.length < 2 || !Number.isInteger(answer) || answer < 0 || answer >= choices.length)) {
       throw new HttpError(400, `Question ${index + 1} needs valid choices and a correct answer.`);
     }
     if (type === 'fill_blank' && !answer) throw new HttpError(400, `Question ${index + 1} needs a correct answer.`);
-    return { prompt, type, choices, answer, explanation: cleanText(raw.explanation, 1000) };
+    if (['matching', 'ordering'].includes(type) && (choices.length < 2 || answer.length !== choices.length)) {
+      throw new HttpError(400, `Question ${index + 1} needs a complete answer sequence.`);
+    }
+    return {
+      prompt, type, choices, answer, explanation: cleanText(raw.explanation, 1000),
+      points: clampInteger(raw.points, 1, 100, 1),
+      settings: raw.settings && typeof raw.settings === 'object' ? raw.settings : {}
+    };
   });
   if (publishing && questions.length === 0) throw new HttpError(400, 'A published lesson needs at least one question.');
   return questions;
@@ -88,6 +103,11 @@ export function normalizeLesson(body, publishing = false) {
     objectives: Array.isArray(body.objectives) ? body.objectives.map((item) => cleanText(item, 300)).filter(Boolean).slice(0, 10) : [],
     xpReward: clampInteger(body.xpReward, 0, 5000, 100),
     masteryScore: clampInteger(body.masteryScore, 1, 100, 75),
+    attemptLimit: clampInteger(body.attemptLimit, 0, 100, 0),
+    shuffleQuestions: Boolean(body.shuffleQuestions),
+    availableFrom: body.availableFrom ? new Date(body.availableFrom).toISOString() : null,
+    availableUntil: body.availableUntil ? new Date(body.availableUntil).toISOString() : null,
+    publishAt: body.publishAt ? new Date(body.publishAt).toISOString() : null,
     position: clampInteger(body.position, 0, 10000, 0),
     status: publishing || body.status === 'published' ? 'published' : 'draft',
     questions: normalizeQuestions(body.questions, publishing || body.status === 'published')
@@ -98,21 +118,37 @@ export function normalizeLesson(body, publishing = false) {
   return lesson;
 }
 
-export function submitLessonAttempt(db, user, lesson, body) {
-  const questions = lessonQuestions(db, lesson.id, true);
+export async function submitLessonAttempt(db, user, lesson, body) {
+  const questions = await lessonQuestions(db, lesson.id, true);
   const answers = Array.isArray(body.answers) ? body.answers : [];
   if (!questions.length || answers.length !== questions.length) throw new HttpError(400, 'Answer every question before submitting.');
+  const timestamp = Date.now();
+  if (lesson.available_from && timestamp < new Date(lesson.available_from).getTime()) throw new HttpError(403, 'This lesson is not available yet.');
+  if (lesson.available_until && timestamp > new Date(lesson.available_until).getTime()) throw new HttpError(403, 'This lesson is no longer available.');
+  const previous = await findProgress(db, user.id, lesson.id);
+  if (lesson.attempt_limit > 0 && (previous?.attempts || 0) >= lesson.attempt_limit) throw new HttpError(409, 'You have reached the attempt limit for this lesson.');
   let correct = 0;
+  let earnedPoints = 0;
+  const totalPoints = questions.reduce((sum, question) => sum + (question.points || 1), 0);
+  let requiresManualReview = false;
   const review = questions.map((question, index) => {
     const selected = answers[index];
-    const valid = question.type === 'fill_blank'
+    const valid = ['fill_blank', 'essay'].includes(question.type)
       ? typeof selected === 'string' && selected.trim().length > 0
+      : ['matching', 'ordering'].includes(question.type)
+        ? Array.isArray(selected) && selected.length === question.answer.length
       : Number.isInteger(selected) && selected >= 0 && selected < question.choices.length;
     if (!valid) throw new HttpError(400, `Question ${index + 1} has an invalid answer.`);
-    const isCorrect = question.type === 'fill_blank'
+    const isCorrect = question.type === 'essay' ? true : question.type === 'fill_blank'
       ? selected.trim().toLocaleLowerCase() === String(question.answer).trim().toLocaleLowerCase()
+      : ['matching', 'ordering'].includes(question.type)
+        ? JSON.stringify(selected) === JSON.stringify(question.answer)
       : selected === question.answer;
-    if (isCorrect) correct += 1;
+    if (question.type === 'essay') requiresManualReview = true;
+    if (isCorrect) {
+      correct += 1;
+      earnedPoints += question.points || 1;
+    }
     return {
       prompt: question.prompt,
       type: question.type,
@@ -122,14 +158,13 @@ export function submitLessonAttempt(db, user, lesson, body) {
       explanation: question.explanation
     };
   });
-  const score = Math.round((correct / questions.length) * 100);
+  const score = Math.round((earnedPoints / totalPoints) * 100);
   const passed = score >= lesson.mastery_score;
-  const previous = findProgress(db, user.id, lesson.id);
   const firstCompletion = passed && previous?.status !== 'completed';
   const now = new Date().toISOString();
   const durationSeconds = clampInteger(body.durationSeconds, 0, 86400, 0);
 
-  recordLessonAttempt(db, {
+  await recordLessonAttempt(db, {
     user,
     lesson,
     answers,
@@ -141,8 +176,10 @@ export function submitLessonAttempt(db, user, lesson, body) {
     firstCompletion,
     now
   });
-  const freshUser = findUserById(db, user.id);
-  return { score, correct, total: questions.length, passed, masteryScore: lesson.mastery_score, firstCompletion, review, dashboard: studentDashboard(db, freshUser) };
+  const { issueEligibleCertificates } = await import('../platform/platform.service.js');
+  await issueEligibleCertificates(db, user.id);
+  const freshUser = await findUserById(db, user.id);
+  return { score, correct, total: questions.length, passed, requiresManualReview, masteryScore: lesson.mastery_score, firstCompletion, review, dashboard: await studentDashboard(db, freshUser) };
 }
 
 export function wordAccuracy(expected, transcript) {

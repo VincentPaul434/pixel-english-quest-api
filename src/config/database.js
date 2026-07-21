@@ -2,7 +2,11 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 import { lessons as seedLessons } from '../lesson/lesson.seed.js';
+
+pg.types.setTypeParser(20, Number);
+pg.types.setTypeParser(1700, Number);
 
 export const DEMO_ACCOUNTS = {
   teacher: { email: 'teacher@pixel.academy', password: 'Teach123!' },
@@ -53,6 +57,12 @@ function schema(db) {
       daily_goal INTEGER NOT NULL DEFAULT 15 CHECK (daily_goal BETWEEN 5 AND 180),
       onboarding_complete INTEGER NOT NULL DEFAULT 0,
       xp INTEGER NOT NULL DEFAULT 0,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      email_verified_at TEXT,
+      locale TEXT NOT NULL DEFAULT 'en',
+      notification_preferences_json TEXT NOT NULL DEFAULT '{}',
+      mfa_secret TEXT,
+      mfa_enabled INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
 
@@ -70,6 +80,11 @@ function schema(db) {
       description TEXT NOT NULL DEFAULT '',
       difficulty TEXT NOT NULL DEFAULT 'Beginner',
       status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+      catalog_visibility TEXT NOT NULL DEFAULT 'private',
+      enrollment_mode TEXT NOT NULL DEFAULT 'invite',
+      certificate_enabled INTEGER NOT NULL DEFAULT 1,
+      prerequisite_course_id TEXT,
+      published_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -100,6 +115,12 @@ function schema(db) {
       objectives_json TEXT NOT NULL DEFAULT '[]',
       xp_reward INTEGER NOT NULL DEFAULT 100 CHECK (xp_reward BETWEEN 0 AND 5000),
       mastery_score INTEGER NOT NULL DEFAULT 75 CHECK (mastery_score BETWEEN 1 AND 100),
+      attempt_limit INTEGER NOT NULL DEFAULT 0,
+      shuffle_questions INTEGER NOT NULL DEFAULT 0,
+      available_from TEXT,
+      available_until TEXT,
+      publish_at TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
       position INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
       created_at TEXT NOT NULL,
@@ -114,6 +135,9 @@ function schema(db) {
       choices_json TEXT NOT NULL DEFAULT '[]',
       answer_json TEXT NOT NULL,
       explanation TEXT NOT NULL DEFAULT '',
+      question_kind TEXT,
+      points INTEGER NOT NULL DEFAULT 1,
+      settings_json TEXT NOT NULL DEFAULT '{}',
       position INTEGER NOT NULL DEFAULT 0
     );
 
@@ -159,6 +183,10 @@ function schema(db) {
       course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
       lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
+      instructions TEXT NOT NULL DEFAULT '',
+      submission_type TEXT NOT NULL DEFAULT 'quiz',
+      max_score INTEGER NOT NULL DEFAULT 100,
+      allow_resubmission INTEGER NOT NULL DEFAULT 1,
       due_at TEXT,
       created_at TEXT NOT NULL
     );
@@ -218,23 +246,179 @@ function schema(db) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS classrooms (
+      id TEXT PRIMARY KEY,
+      teacher_id TEXT NOT NULL REFERENCES users(id),
+      course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      code TEXT NOT NULL UNIQUE,
+      starts_at TEXT,
+      ends_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS classroom_students (
+      classroom_id TEXT NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      enrolled_at TEXT NOT NULL,
+      PRIMARY KEY (classroom_id, student_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS submissions (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      text_content TEXT NOT NULL DEFAULT '',
+      attachment_url TEXT,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      score INTEGER,
+      feedback TEXT NOT NULL DEFAULT '',
+      rubric_json TEXT NOT NULL DEFAULT '[]',
+      submitted_at TEXT NOT NULL,
+      graded_at TEXT,
+      graded_by TEXT REFERENCES users(id),
+      attempt_number INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS discussions (
+      id TEXT PRIMARY KEY,
+      course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      parent_id TEXT REFERENCES discussions(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      edited_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      link TEXT,
+      read_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS certificates (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      verification_code TEXT NOT NULL UNIQUE,
+      issued_at TEXT NOT NULL,
+      UNIQUE(user_id, course_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS lesson_versions (
+      id TEXT PRIMARY KEY,
+      lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+      teacher_id TEXT NOT NULL REFERENCES users(id),
+      version INTEGER NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS question_bank (
+      id TEXT PRIMARY KEY,
+      teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      prompt TEXT NOT NULL,
+      type TEXT NOT NULL,
+      choices_json TEXT NOT NULL DEFAULT '[]',
+      answer_json TEXT NOT NULL,
+      explanation TEXT NOT NULL DEFAULT '',
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id TEXT PRIMARY KEY,
+      course_id TEXT REFERENCES courses(id) ON DELETE CASCADE,
+      classroom_id TEXT REFERENCES classrooms(id) ON DELETE CASCADE,
+      creator_id TEXT NOT NULL REFERENCES users(id),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      starts_at TEXT NOT NULL,
+      ends_at TEXT,
+      event_type TEXT NOT NULL DEFAULT 'class',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS attendance (
+      event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'present',
+      note TEXT NOT NULL DEFAULT '',
+      marked_at TEXT NOT NULL,
+      PRIMARY KEY (event_id, student_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_lessons_course ON lessons(course_id, position);
     CREATE INDEX IF NOT EXISTS idx_attempts_user ON lesson_attempts(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_activity_user ON activities(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_assignment_student ON assignment_students(student_id, status);
+    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_submissions_assignment ON submissions(assignment_id, student_id, submitted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_discussions_course ON discussions(course_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
   `);
 }
 
 function migrate(db) {
-  const lessonColumns = new Set(db.prepare('PRAGMA table_info(lessons)').all().map((column) => column.name));
-  const additions = [
-    ['audio_url', 'TEXT'],
-    ['video_url', 'TEXT'],
-    ['resource_url', 'TEXT']
-  ];
-  for (const [name, definition] of additions) {
-    if (!lessonColumns.has(name)) db.exec(`ALTER TABLE lessons ADD COLUMN ${name} ${definition}`);
+  const additions = {
+    users: [
+      ['is_admin', 'INTEGER NOT NULL DEFAULT 0'], ['email_verified_at', 'TEXT'], ['locale', "TEXT NOT NULL DEFAULT 'en'"],
+      ['notification_preferences_json', "TEXT NOT NULL DEFAULT '{}'"], ['mfa_secret', 'TEXT'], ['mfa_enabled', 'INTEGER NOT NULL DEFAULT 0']
+    ],
+    courses: [
+      ['catalog_visibility', "TEXT NOT NULL DEFAULT 'private'"], ['enrollment_mode', "TEXT NOT NULL DEFAULT 'invite'"],
+      ['certificate_enabled', 'INTEGER NOT NULL DEFAULT 1'], ['prerequisite_course_id', 'TEXT'], ['published_at', 'TEXT']
+    ],
+    lessons: [
+      ['audio_url', 'TEXT'], ['video_url', 'TEXT'], ['resource_url', 'TEXT'], ['attempt_limit', 'INTEGER NOT NULL DEFAULT 0'],
+      ['shuffle_questions', 'INTEGER NOT NULL DEFAULT 0'], ['available_from', 'TEXT'], ['available_until', 'TEXT'],
+      ['publish_at', 'TEXT'], ['version', 'INTEGER NOT NULL DEFAULT 1']
+    ],
+    questions: [['question_kind', 'TEXT'], ['points', 'INTEGER NOT NULL DEFAULT 1'], ['settings_json', "TEXT NOT NULL DEFAULT '{}'" ]],
+    assignments: [
+      ['instructions', "TEXT NOT NULL DEFAULT ''"], ['submission_type', "TEXT NOT NULL DEFAULT 'quiz'"],
+      ['max_score', 'INTEGER NOT NULL DEFAULT 100'], ['allow_resubmission', 'INTEGER NOT NULL DEFAULT 1']
+    ]
+  };
+  for (const [table, columns] of Object.entries(additions)) {
+    const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+    for (const [name, definition] of columns) {
+      if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+    }
   }
+  db.prepare("UPDATE users SET is_admin = 1, email_verified_at = COALESCE(email_verified_at, created_at) WHERE id = 'teacher-demo'").run();
 }
 
 function insertQuestion(db, lessonId, question, position) {
@@ -333,10 +517,93 @@ function seed(db, legacy) {
   db.prepare(`INSERT INTO announcements (id, teacher_id, course_id, title, body, published_at)
     VALUES (?, ?, ?, ?, ?, ?)`)
     .run('announcement-welcome', teacherId, courseId, 'Welcome to the Academy', 'Complete one quest each day and use your notes to capture new words.', now);
+  db.prepare('UPDATE users SET email_verified_at = ? WHERE id IN (?, ?)').run(now, teacherId, studentId);
+  db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(teacherId);
 }
 
-export function createDatabase({ filename }) {
+function sqliteTransaction(db, work) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = work(db);
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function postgresSql(sql) {
+  let parameter = 0;
+  const ignoredInsert = /INSERT\s+OR\s+IGNORE\s+INTO/i.test(sql);
+  let normalized = sql
+    .replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, 'INSERT INTO')
+    .replace(/MAX\(progress\.best_score,\s*excluded\.best_score\)/gi, 'GREATEST(progress.best_score, excluded.best_score)')
+    .replace(/\bAS\s+([a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*)/g, 'AS "$1"')
+    .replace(/\?/g, () => `$${++parameter}`);
+  if (ignoredInsert && !/\bON\s+CONFLICT\b/i.test(normalized)) normalized = `${normalized.trim().replace(/;$/, '')} ON CONFLICT DO NOTHING`;
+  return normalized;
+}
+
+class PostgresDatabase {
+  constructor(connection, ownsConnection = true) {
+    this.connection = connection;
+    this.ownsConnection = ownsConnection;
+    this.kind = 'postgres';
+  }
+
+  prepare(sql) {
+    const text = postgresSql(sql);
+    return {
+      get: async (...params) => (await this.connection.query(text, params)).rows[0],
+      all: async (...params) => (await this.connection.query(text, params)).rows,
+      run: async (...params) => {
+        const result = await this.connection.query(text, params);
+        return { changes: result.rowCount };
+      }
+    };
+  }
+
+  async exec(sql) {
+    await this.connection.query(sql);
+  }
+
+  async transaction(work) {
+    const client = await this.connection.connect();
+    const transaction = new PostgresDatabase(client, false);
+    try {
+      await client.query('BEGIN');
+      const result = await work(transaction);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async close() {
+    if (this.ownsConnection) await this.connection.end();
+  }
+}
+
+function createPostgresDatabase(databaseUrl) {
+  const ssl = process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false };
+  return new PostgresDatabase(new pg.Pool({
+    connectionString: databaseUrl,
+    ssl,
+    max: Number(process.env.DB_POOL_SIZE) || 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
+  }));
+}
+
+export function createDatabase({ filename, databaseUrl = '' } = {}) {
+  if (databaseUrl) return createPostgresDatabase(databaseUrl);
   const db = new DatabaseSync(filename);
+  db.kind = 'sqlite';
   schema(db);
   migrate(db);
   const counts = db.prepare(`SELECT
@@ -346,15 +613,16 @@ export function createDatabase({ filename }) {
     && Boolean(db.prepare("SELECT id FROM users WHERE id = 'teacher-demo'").get());
   if (partialDemoSeed) db.prepare("DELETE FROM users WHERE id = 'teacher-demo'").run();
   if (db.prepare('SELECT COUNT(*) AS count FROM users').get().count === 0) {
-    inTransaction(db, () => seed(db, filename === ':memory:' ? null : legacyDataFor(filename)));
+    sqliteTransaction(db, () => seed(db, filename === ':memory:' ? null : legacyDataFor(filename)));
   }
   return db;
 }
 
-export function inTransaction(db, work) {
+export async function inTransaction(db, work) {
+  if (db.kind === 'postgres') return db.transaction(work);
   db.exec('BEGIN IMMEDIATE');
   try {
-    const result = work();
+    const result = await work(db);
     db.exec('COMMIT');
     return result;
   } catch (error) {
@@ -374,13 +642,17 @@ export function publicUser(row) {
     learningGoal: row.learning_goal,
     dailyGoal: row.daily_goal,
     onboardingComplete: Boolean(row.onboarding_complete),
+    isAdmin: Boolean(row.is_admin),
+    emailVerified: Boolean(row.email_verified_at),
+    locale: row.locale || 'en',
+    mfaEnabled: Boolean(row.mfa_enabled),
     xp: row.xp,
     level: Math.floor(row.xp / 250) + 1
   };
 }
 
-export function addActivity(db, userId, activity) {
-  db.prepare(`INSERT INTO activities (id, user_id, type, icon, title, detail, created_at)
+export async function addActivity(db, userId, activity) {
+  await db.prepare(`INSERT INTO activities (id, user_id, type, icon, title, detail, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(randomUUID(), userId, activity.type, activity.icon || 'sparkle', activity.title, activity.detail, new Date().toISOString());
 }

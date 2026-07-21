@@ -135,12 +135,20 @@ async function seedDemoData() {
   console.log('Seeded Supabase demo data.');
 }
 
+async function applySafeDemoAccountUpgrades() {
+  const timestamp = new Date().toISOString();
+  await client.query(`update users set email_verified_at = coalesce(email_verified_at, created_at, $1)
+    where id in ('teacher-demo', 'student-demo')`, [timestamp]);
+  await client.query("update users set is_admin = 1 where id = 'teacher-demo'");
+}
+
 try {
   await client.connect();
   const schema = await readFile(path.join(__dirname, '..', 'supabase', 'schema.sql'), 'utf8');
   await client.query('begin');
   await client.query(schema);
   await seedDemoData();
+  await applySafeDemoAccountUpgrades();
   await client.query('commit');
   console.log('Supabase setup complete.');
 } catch (error) {
