@@ -5,3 +5,5 @@ academy.db-wal
 coverage/
 .env
 *.log
+.vercel/
+.env.local
