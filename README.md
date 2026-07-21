@@ -120,7 +120,7 @@ Run `npm run supabase:verify` for a read-only check of student, teacher, platfor
 
 ## Production deployment notes
 
-`render.yaml` defines the production backend as a Singapore Render web service on the `pixel-features` branch. It uses Supabase Postgres, requires no persistent disk, runs `npm start`, and checks `/api/health`. Configure `DATABASE_URL`, restricted CORS origins, and optional production email/storage values when applying the Blueprint.
+`render.yaml` defines the production backend as a Singapore Render web service on the `main` branch. It uses Supabase Postgres, requires no persistent disk, runs `npm start`, and checks `/api/health`. Configure `DATABASE_URL`, restricted CORS origins, and optional production email/storage values when applying the Blueprint.
 
 The included Vercel function entrypoint remains available as an alternative deployment target. The frontend should receive the final Render URL through `VITE_API_URL` at build time.
 
