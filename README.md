@@ -39,6 +39,8 @@ npm start
 
 End-to-end tests are skipped unless `TEST_DATABASE_URL` points to a dedicated Supabase Postgres test database. The suite truncates and reseeds that database before every workflow; never point it at development or production data.
 
+After deploying to an existing database, run `npm run supabase:migrate:mfa` and `npm run supabase:migrate:admin` once to add the new account-security fields.
+
 ## Configuration
 
 - `PORT`: HTTP port, default `3001`
@@ -48,6 +50,7 @@ End-to-end tests are skipped unless `TEST_DATABASE_URL` points to a dedicated Su
 - `ALLOWED_ORIGIN_HOSTS`: comma-separated frontend hostnames; useful when a host injects its generated domain
 - `TEACHER_INVITE_CODE`: optional code required when registering new teacher accounts
 - `EMAIL_WEBHOOK_URL`: optional email-provider webhook for verification and password-reset messages
+- `PUBLIC_APP_URL`: public frontend origin used to include complete verification links in email-webhook payloads
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`: optional signed file-upload configuration
 
 ## Supabase database setup

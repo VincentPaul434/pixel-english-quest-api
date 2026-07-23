@@ -51,13 +51,49 @@ function verifyTotp(secret, code) {
   });
 }
 
+function recoveryCodeHash(code) {
+  return tokenHash(String(code || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase());
+}
+
+function createRecoveryCodes() {
+  return Array.from({ length: 8 }, () => {
+    const value = randomBytes(6).toString('hex').toUpperCase();
+    return `${value.slice(0, 4)}-${value.slice(4, 8)}-${value.slice(8, 12)}`;
+  });
+}
+
+async function consumeRecoveryCode(db, user, code) {
+  const hashes = JSON.parse(user.mfa_recovery_codes_json || '[]');
+  const suppliedHash = recoveryCodeHash(code);
+  const matchIndex = hashes.indexOf(suppliedHash);
+  if (matchIndex < 0) return false;
+  hashes.splice(matchIndex, 1);
+  await db.prepare('UPDATE users SET mfa_recovery_codes_json = ? WHERE id = ?').run(JSON.stringify(hashes), user.id);
+  return true;
+}
+
+async function replaceRecoveryCodes(db, userId) {
+  const recoveryCodes = createRecoveryCodes();
+  await db.prepare('UPDATE users SET mfa_recovery_codes_json = ? WHERE id = ?')
+    .run(JSON.stringify(recoveryCodes.map(recoveryCodeHash)), userId);
+  return recoveryCodes;
+}
+
 async function sendAccountMessage(kind, user, token) {
   const webhook = process.env.EMAIL_WEBHOOK_URL;
   if (!webhook) return;
   try {
     await fetch(webhook, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind, email: user.email, name: user.name, token })
+      body: JSON.stringify({
+        kind,
+        email: user.email,
+        name: user.name,
+        token,
+        actionUrl: kind === 'verify-email' && process.env.PUBLIC_APP_URL
+          ? `${String(process.env.PUBLIC_APP_URL).replace(/\/$/, '')}${kind === 'verify-email' ? '/verify-email' : '/auth'}?token=${encodeURIComponent(token)}`
+          : undefined
+      })
     });
   } catch {
     // Account endpoints stay privacy-safe even when an optional email provider is unavailable.
@@ -87,7 +123,10 @@ export async function login(db, body) {
   const input = validateLogin(body);
   const user = await findUserByEmail(db, input.email);
   if (!user || !passwordMatches(input.password, user.password_hash)) throw new AppError(401, 'Email or password is incorrect.');
-  if (user.mfa_enabled && !verifyTotp(user.mfa_secret, input.mfaCode)) throw new AppError(401, 'A valid authenticator code is required.');
+  if (user.account_status && user.account_status !== 'active') throw new AppError(403, `This account is ${user.account_status}. Contact an administrator for help.`);
+  if (user.mfa_enabled && !verifyTotp(user.mfa_secret, input.mfaCode) && !await consumeRecoveryCode(db, user, input.mfaCode)) {
+    throw new AppError(401, 'A valid authenticator or recovery code is required.');
+  }
   return { ...await createSession(db, user.id), user: toPublicUser(user) };
 }
 
@@ -147,12 +186,19 @@ export async function enableMfa(db, user, body) {
   const current = await db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
   if (!current.mfa_secret || !verifyTotp(current.mfa_secret, cleanText(body.code, 12))) throw new AppError(400, 'Authenticator code is invalid.');
   await db.prepare('UPDATE users SET mfa_enabled = 1 WHERE id = ?').run(user.id);
-  return { ok: true, mfaEnabled: true };
+  return { ok: true, mfaEnabled: true, recoveryCodes: await replaceRecoveryCodes(db, user.id) };
+}
+
+export async function regenerateMfaRecoveryCodes(db, user, body) {
+  const current = await db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+  if (!current.mfa_enabled) throw new AppError(400, 'Enable authenticator MFA before generating recovery codes.');
+  if (!passwordMatches(String(body.password || ''), current.password_hash)) throw new AppError(401, 'Password is incorrect.');
+  return { ok: true, recoveryCodes: await replaceRecoveryCodes(db, user.id) };
 }
 
 export async function disableMfa(db, user, body) {
   const current = await db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
   if (!passwordMatches(String(body.password || ''), current.password_hash)) throw new AppError(401, 'Password is incorrect.');
-  await db.prepare('UPDATE users SET mfa_secret = NULL, mfa_enabled = 0 WHERE id = ?').run(user.id);
+  await db.prepare("UPDATE users SET mfa_secret = NULL, mfa_enabled = 0, mfa_recovery_codes_json = '[]' WHERE id = ?").run(user.id);
   return { ok: true, mfaEnabled: false };
 }

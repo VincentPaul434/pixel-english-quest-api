@@ -21,6 +21,9 @@ async function audit(db, actorId, action, entityType, entityId, metadata = {}) {
 }
 
 async function notify(db, userId, type, title, body, link = null) {
+  const recipient = await db.prepare('SELECT notification_preferences_json AS preferences FROM users WHERE id = ?').get(userId);
+  const preferences = parseJson(recipient?.preferences, {});
+  if (preferences[type] === false) return;
   await db.prepare(`INSERT INTO notifications (id, user_id, type, title, body, link, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(uniqueId('notification'), userId, type, title, body, link, now());
@@ -40,8 +43,8 @@ async function commonOverview(db, user) {
       FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30`).all(user.id),
     db.prepare(`SELECT DISTINCT ce.id, ce.course_id AS courseId, ce.classroom_id AS classroomId,
       ce.title, ce.description, ce.starts_at AS startsAt, ce.ends_at AS endsAt, ce.event_type AS eventType,
-      c.title AS courseTitle
-      FROM calendar_events ce LEFT JOIN courses c ON c.id = ce.course_id
+      c.title AS courseTitle, cl.name AS classroomName
+      FROM calendar_events ce LEFT JOIN courses c ON c.id = ce.course_id LEFT JOIN classrooms cl ON cl.id = ce.classroom_id
       LEFT JOIN enrollments e ON e.course_id = ce.course_id AND e.user_id = ?
       WHERE ce.creator_id = ? OR e.user_id = ?
       ORDER BY ce.starts_at LIMIT 50`).all(user.id, user.id, user.id),
@@ -53,7 +56,20 @@ async function commonOverview(db, user) {
       WHERE c.teacher_id = ? OR e.user_id = ?
       ORDER BY d.created_at DESC LIMIT 50`).all(user.id, user.id, user.id)
   ]);
-  return { notifications, events, discussions, unreadNotifications: notifications.filter((item) => !item.readAt).length };
+  if (user.role === 'teacher') {
+    await Promise.all(events.map(async (event) => {
+      event.attendance = await db.prepare(`SELECT a.student_id AS studentId, a.status, a.note, a.marked_at AS markedAt,
+        u.name AS studentName, u.email AS studentEmail FROM attendance a JOIN users u ON u.id = a.student_id
+        WHERE a.event_id = ? ORDER BY u.name`).all(event.id);
+    }));
+  }
+  return {
+    notifications,
+    events,
+    discussions,
+    unreadNotifications: notifications.filter((item) => !item.readAt).length,
+    notificationPreferences: parseJson(user.notification_preferences_json, {})
+  };
 }
 
 async function studentOverview(db, user) {
@@ -187,6 +203,14 @@ export async function markNotificationRead(db, user, notificationId) {
 export async function markAllNotificationsRead(db, user) {
   await db.prepare('UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE user_id = ?').run(now(), user.id);
   return platformOverview(db, user);
+}
+
+export async function updateNotificationPreferences(db, user, body) {
+  const allowed = ['announcement', 'assignment', 'calendar', 'certificate', 'classroom', 'discussion', 'enrollment', 'grade', 'join_request', 'submission'];
+  const preferences = Object.fromEntries(allowed.map((key) => [key, body[key] !== false]));
+  await db.prepare('UPDATE users SET notification_preferences_json = ? WHERE id = ?').run(JSON.stringify(preferences), user.id);
+  await audit(db, user.id, 'update', 'notification_preferences', user.id, preferences);
+  return platformOverview(db, { ...user, notification_preferences_json: JSON.stringify(preferences) });
 }
 
 export async function listCourseDiscussions(db, user, courseId) {
@@ -444,11 +468,28 @@ export async function addClassroomStudent(db, teacher, classroomId, studentId) {
   return platformOverview(db, teacher);
 }
 
+export async function addClassroomStudentByEmail(db, teacher, classroomId, body) {
+  const email = cleanText(body.email, 160).toLocaleLowerCase();
+  const student = await db.prepare("SELECT id FROM users WHERE lower(email) = ? AND role = 'student'").get(email);
+  if (!student) throw new HttpError(404, 'No student account uses that email address.');
+  return addClassroomStudent(db, teacher, classroomId, student.id);
+}
+
 export async function removeClassroomStudent(db, teacher, classroomId, studentId) {
   const classroom = await ownedClassroom(db, teacher.id, classroomId);
   await removeClassroomAccess(db, classroom, studentId);
   await notify(db, studentId, 'classroom', `Removed from ${classroom.name}`, 'Your classroom access was revoked.', '/student');
   await audit(db, teacher.id, 'remove_student', 'classroom', classroom.id, { studentId });
+  return platformOverview(db, teacher);
+}
+
+export async function removeClassroomStudents(db, teacher, classroomId, body) {
+  const classroom = await ownedClassroom(db, teacher.id, classroomId);
+  const studentIds = Array.isArray(body.studentIds) ? [...new Set(body.studentIds.map((item) => cleanText(item, 100)).filter(Boolean))].slice(0, 200) : [];
+  if (!studentIds.length) throw new HttpError(400, 'Select at least one student.');
+  for (const studentId of studentIds) await removeClassroomAccess(db, classroom, studentId);
+  await Promise.all(studentIds.map((studentId) => notify(db, studentId, 'classroom', `Removed from ${classroom.name}`, 'Your classroom access was revoked.', '/student')));
+  await audit(db, teacher.id, 'remove_students', 'classroom', classroom.id, { studentIds });
   return platformOverview(db, teacher);
 }
 
@@ -488,7 +529,9 @@ export async function createCalendarEvent(db, teacher, body) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, courseId, classroomId, teacher.id, title, cleanText(body.description, 3000), startsAt,
       optionalIsoDate(body.endsAt), cleanText(body.eventType, 40) || 'class', now());
-  const recipients = courseId ? await db.prepare('SELECT user_id AS id FROM enrollments WHERE course_id = ?').all(courseId) : [];
+  const recipients = classroomId
+    ? await db.prepare('SELECT student_id AS id FROM classroom_students WHERE classroom_id = ?').all(classroomId)
+    : courseId ? await db.prepare('SELECT user_id AS id FROM enrollments WHERE course_id = ?').all(courseId) : [];
   await Promise.all(recipients.map((recipient) => notify(db, recipient.id, 'calendar', title, `Scheduled for ${startsAt}.`, `/calendar/${id}`)));
   await audit(db, teacher.id, 'create', 'calendar_event', id);
   return platformOverview(db, teacher);
@@ -500,6 +543,10 @@ export async function markAttendance(db, teacher, eventId, body) {
   const studentId = cleanText(body.studentId, 100);
   const status = ['present', 'absent', 'late', 'excused'].includes(body.status) ? body.status : 'present';
   if (!await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'student'").get(studentId)) throw new HttpError(404, 'Student not found.');
+  const eligible = event.classroom_id
+    ? await db.prepare('SELECT 1 AS eligible FROM classroom_students WHERE classroom_id = ? AND student_id = ?').get(event.classroom_id, studentId)
+    : event.course_id ? await db.prepare('SELECT 1 AS eligible FROM enrollments WHERE course_id = ? AND user_id = ?').get(event.course_id, studentId) : null;
+  if ((event.classroom_id || event.course_id) && !eligible) throw new HttpError(400, 'This student is not enrolled in the event scope.');
   await db.prepare(`INSERT INTO attendance (event_id, student_id, status, note, marked_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(event_id, student_id) DO UPDATE SET status = excluded.status, note = excluded.note, marked_at = excluded.marked_at`)
     .run(event.id, studentId, status, cleanText(body.note, 1000), now());
@@ -618,7 +665,10 @@ export async function verifyCertificate(db, code) {
   return { valid: true, ...certificate };
 }
 
-export async function teacherReport(db, teacher) {
+export async function teacherReport(db, teacher, filters = {}) {
+  const courseId = cleanText(filters.courseId, 100);
+  const from = optionalIsoDate(filters.from);
+  const to = optionalIsoDate(filters.to);
   const rows = await db.prepare(`SELECT c.title AS course, u.name AS student, u.email,
     COUNT(DISTINCT l.id) AS assignedLessons,
     COUNT(DISTINCT CASE WHEN p.status = 'completed' THEN p.lesson_id END) AS completedLessons,
@@ -626,7 +676,9 @@ export async function teacherReport(db, teacher) {
     FROM courses c JOIN enrollments e ON e.course_id = c.id JOIN users u ON u.id = e.user_id
     LEFT JOIN lessons l ON l.course_id = c.id AND l.status = 'published'
     LEFT JOIN progress p ON p.user_id = u.id AND p.lesson_id = l.id
-    WHERE c.teacher_id = ? GROUP BY c.id, c.title, u.id, u.name, u.email ORDER BY c.title, u.name`).all(teacher.id);
+      AND (? IS NULL OR p.updated_at >= ?) AND (? IS NULL OR p.updated_at <= ?)
+    WHERE c.teacher_id = ? AND (? = '' OR c.id = ?)
+    GROUP BY c.id, c.title, u.id, u.name, u.email ORDER BY c.title, u.name`).all(from, from, to, to, teacher.id, courseId, courseId);
   return rows;
 }
 
@@ -645,7 +697,7 @@ export async function adminDashboard(db, admin) {
   if (!admin.is_admin) throw new HttpError(403, 'Administrator access is required.');
   const [summary, users, logs] = await Promise.all([
     adminSummary(db),
-    db.prepare(`SELECT id, email, name, role, is_admin AS isAdmin, email_verified_at AS emailVerifiedAt,
+    db.prepare(`SELECT id, email, name, role, is_admin AS isAdmin, email_verified_at AS emailVerifiedAt, account_status AS accountStatus,
       xp, created_at AS createdAt FROM users ORDER BY created_at DESC`).all(),
     db.prepare(`SELECT al.id, al.action, al.entity_type AS entityType, al.entity_id AS entityId,
       al.metadata_json AS metadata, al.created_at AS createdAt, u.name AS actorName
@@ -664,12 +716,63 @@ export async function setAdminStatus(db, admin, userId, body) {
   return adminDashboard(db, admin);
 }
 
+export async function updateQuestionBankItem(db, teacher, questionId, body) {
+  if (!await db.prepare('SELECT id FROM question_bank WHERE id = ? AND teacher_id = ?').get(questionId, teacher.id)) throw new HttpError(404, 'Question-bank item not found.');
+  const prompt = cleanText(body.prompt, 500);
+  const type = ['multiple_choice', 'true_false', 'fill_blank', 'essay', 'matching', 'ordering'].includes(body.type) ? body.type : 'multiple_choice';
+  const choices = Array.isArray(body.choices) ? body.choices.slice(0, 20) : [];
+  if (!prompt) throw new HttpError(400, 'Question prompt is required.');
+  await db.prepare(`UPDATE question_bank SET prompt = ?, type = ?, choices_json = ?, answer_json = ?, explanation = ?, tags_json = ?, updated_at = ?
+    WHERE id = ? AND teacher_id = ?`).run(prompt, type, JSON.stringify(choices), JSON.stringify(body.answer ?? ''), cleanText(body.explanation, 2000), JSON.stringify(Array.isArray(body.tags) ? body.tags.slice(0, 20).map((tag) => cleanText(tag, 60)).filter(Boolean) : []), now(), questionId, teacher.id);
+  await audit(db, teacher.id, 'update', 'question_bank', questionId);
+  return platformOverview(db, teacher);
+}
+
+export async function deleteQuestionBankItem(db, teacher, questionId) {
+  const result = await db.prepare('DELETE FROM question_bank WHERE id = ? AND teacher_id = ?').run(questionId, teacher.id);
+  if (!result.changes) throw new HttpError(404, 'Question-bank item not found.');
+  await audit(db, teacher.id, 'delete', 'question_bank', questionId);
+  return platformOverview(db, teacher);
+}
+
+export async function setUserRole(db, admin, userId, body) {
+  if (!admin.is_admin) throw new HttpError(403, 'Administrator access is required.');
+  const role = body.role === 'teacher' ? 'teacher' : body.role === 'student' ? 'student' : '';
+  if (!role) throw new HttpError(400, 'Role must be student or teacher.');
+  if (!await db.prepare('SELECT id FROM users WHERE id = ?').get(userId)) throw new HttpError(404, 'User not found.');
+  await db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
+  await audit(db, admin.id, 'set_role', 'user', userId, { role });
+  return adminDashboard(db, admin);
+}
+
+export async function setAccountStatus(db, admin, userId, body) {
+  if (!admin.is_admin) throw new HttpError(403, 'Administrator access is required.');
+  const status = ['active', 'suspended', 'deactivated'].includes(body.status) ? body.status : '';
+  if (!status) throw new HttpError(400, 'Account status is invalid.');
+  if (admin.id === userId && status !== 'active') throw new HttpError(400, 'You cannot suspend or deactivate your own account.');
+  if (!await db.prepare('SELECT id FROM users WHERE id = ?').get(userId)) throw new HttpError(404, 'User not found.');
+  await db.prepare('UPDATE users SET account_status = ? WHERE id = ?').run(status, userId);
+  if (status !== 'active') await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+  await audit(db, admin.id, 'set_account_status', 'user', userId, { status });
+  return adminDashboard(db, admin);
+}
+
 export async function signUpload(_db, user, body) {
   const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const bucket = process.env.SUPABASE_STORAGE_BUCKET || 'learning-assets';
   if (!supabaseUrl || !serviceKey) throw new HttpError(503, 'Cloud file storage is not configured.');
   const original = cleanText(body.filename, 240);
+  const contentType = cleanText(body.contentType, 160).toLowerCase();
+  const size = Number(body.size);
+  const allowedTypes = new Set([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'text/plain',
+    'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  ]);
+  if (!Number.isFinite(size) || size <= 0 || size > 10 * 1024 * 1024) throw new HttpError(400, 'Files must be between 1 byte and 10 MB.');
+  if (!allowedTypes.has(contentType)) throw new HttpError(400, 'This file type is not supported. Upload an image, PDF, text, Word, Excel, or PowerPoint file.');
   const safeName = original.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+/, '').slice(0, 160);
   if (!safeName) throw new HttpError(400, 'A valid filename is required.');
   const path = `${user.id}/${Date.now()}-${randomBytes(5).toString('hex')}-${safeName}`;

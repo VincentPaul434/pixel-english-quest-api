@@ -185,6 +185,8 @@ alter table users add column if not exists locale text not null default 'en';
 alter table users add column if not exists notification_preferences_json text not null default '{}';
 alter table users add column if not exists mfa_secret text;
 alter table users add column if not exists mfa_enabled integer not null default 0;
+alter table users add column if not exists mfa_recovery_codes_json text not null default '[]';
+alter table users add column if not exists account_status text not null default 'active';
 alter table courses add column if not exists catalog_visibility text not null default 'private';
 alter table courses add column if not exists enrollment_mode text not null default 'invite';
 alter table courses add column if not exists certificate_enabled integer not null default 1;

@@ -118,6 +118,7 @@ export function publicUser(row) {
     emailVerified: Boolean(row.email_verified_at),
     locale: row.locale || 'en',
     mfaEnabled: Boolean(row.mfa_enabled),
+    accountStatus: row.account_status || 'active',
     xp: row.xp,
     level: Math.floor(row.xp / 250) + 1
   };

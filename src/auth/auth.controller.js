@@ -2,7 +2,7 @@ import { requireUser } from '../shared/middleware/auth.middleware.js';
 import { bodyOf, created, ok } from '../shared/http.js';
 import {
   confirmEmailVerification, confirmPasswordReset, disableMfa, enableMfa, login, logout,
-  publicProfile, register, requestEmailVerification, requestPasswordReset, setupMfa
+  publicProfile, regenerateMfaRecoveryCodes, register, requestEmailVerification, requestPasswordReset, setupMfa
 } from './auth.service.js';
 
 export async function registerUser(context) {
@@ -28,4 +28,5 @@ export async function emailVerificationRequest(context) { ok(context, await requ
 export async function emailVerificationConfirm(context) { ok(context, await confirmEmailVerification(context.db, await bodyOf(context.req))); }
 export async function mfaSetup(context) { ok(context, await setupMfa(context.db, await requireUser(context.req, context.db))); }
 export async function mfaEnable(context) { ok(context, await enableMfa(context.db, await requireUser(context.req, context.db), await bodyOf(context.req))); }
+export async function mfaRecoveryCodes(context) { ok(context, await regenerateMfaRecoveryCodes(context.db, await requireUser(context.req, context.db), await bodyOf(context.req))); }
 export async function mfaDisable(context) { ok(context, await disableMfa(context.db, await requireUser(context.req, context.db), await bodyOf(context.req))); }

@@ -1,6 +1,6 @@
 import {
   emailVerificationConfirm, emailVerificationRequest, getCurrentUser, loginUser, logoutUser,
-  mfaDisable, mfaEnable, mfaSetup, passwordResetConfirm, passwordResetRequest, registerUser
+  mfaDisable, mfaEnable, mfaRecoveryCodes, mfaSetup, passwordResetConfirm, passwordResetRequest, registerUser
 } from './auth.controller.js';
 import { createRouteGroup } from '../shared/routing.js';
 
@@ -14,6 +14,7 @@ const routes = [
   { method: 'POST', path: '/api/auth/email-verification/confirm', action: emailVerificationConfirm },
   { method: 'POST', path: '/api/auth/mfa/setup', action: mfaSetup },
   { method: 'POST', path: '/api/auth/mfa/enable', action: mfaEnable },
+  { method: 'POST', path: '/api/auth/mfa/recovery-codes', action: mfaRecoveryCodes },
   { method: 'POST', path: '/api/auth/mfa/disable', action: mfaDisable },
   { method: 'GET', path: '/api/me', action: getCurrentUser }
 ];
